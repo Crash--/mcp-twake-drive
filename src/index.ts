@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+/**
+ * mcp-twake-drive: MCP server (stdio) for Twake Drive (cozy-stack).
+ *
+ * Env: TWAKE_DRIVE_URL, TWAKE_DRIVE_TOKEN_COMMAND (or TWAKE_DRIVE_TOKEN),
+ * optional TWAKE_DRIVE_APP_URL, TWAKE_DRIVE_DOWNLOAD_DIR, TWAKE_DRIVE_MAX_TEXT_CHARS.
+ * Logs go to stderr only: stdout carries JSON-RPC.
+ */
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { loadConfig } from './config.js';
+import { DriveClient, ROOT_DIR_ID, type TokenSource } from './drive.js';
+import { CommandTokenProvider } from './token-command.js';
+import { registerTools } from './tools.js';
+import { FileIndex } from './file-index.js';
+import { join } from 'node:path';
+
+const VERSION = '0.1.0';
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const tokens: TokenSource = config.tokenCommand
+    ? new CommandTokenProvider(config.tokenCommand)
+    : { getToken: async () => config.token!, invalidate: () => {} };
+  const drive = new DriveClient(config, tokens);
+
+  // Fail fast with an actionable message rather than exposing broken tools.
+  try {
+    await drive.stat(ROOT_DIR_ID, undefined, { limit: 1 });
+  } catch (e) {
+    process.stderr.write(`mcp-twake-drive: cannot reach ${config.baseUrl}: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+
+  const host = new URL(config.baseUrl).host;
+  const index = new FileIndex(drive, join(config.cacheDir, `${host}.json`));
+  // Warm the search index in the background: the first full sync of a large
+  // drive takes tens of seconds, later ones only pull the new changes.
+  index.sync().catch((e) => process.stderr.write(`mcp-twake-drive: index sync failed: ${(e as Error).message}\n`));
+
+  const server = new McpServer({ name: 'mcp-twake-drive', version: VERSION });
+  registerTools(server, drive, index);
+  await server.connect(new StdioServerTransport());
+  process.stderr.write(`mcp-twake-drive ${VERSION} connected to ${config.baseUrl}\n`);
+}
+
+main().catch((e) => {
+  process.stderr.write(`mcp-twake-drive: ${(e as Error).message}\n`);
+  process.exit(1);
+});

@@ -1,0 +1,36 @@
+{
+  "name": "mcp-twake-drive",
+  "version": "0.1.0",
+  "description": "MCP server for Twake Drive (Cozy stack): browse, search, read, create, organise and share files from any MCP-compatible AI assistant",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "mcp-twake-drive": "build/index.js"
+  },
+  "files": [
+    "build",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["mcp", "twake", "cozy", "drive", "linagora"],
+  "license": "AGPL-3.0",
+  "author": "LINAGORA",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
