@@ -55,13 +55,13 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 
 - **Paths or ids**: items are addressed by `id` or by absolute `path` (`/Documents/report.pdf`); items in a **shared drive** take an extra `drive_id` (from `list_shared_drives`).
 - **Links back to the app**: every result carries a `url` that opens the item in the Twake Drive web app.
-- **Fast search**: the cozy-stack has no server-side search (a Mango `$regex` on names scans every document and times out on large drives). Like the Twake Drive apps, the server keeps a **local metadata index** (names, folders, types, sizes, dates; no content) built from `/files/_changes`, stored with `0600` permissions and refreshed incrementally before each search. The index is only built by the first search, which takes about 15 s on a 50 000-item drive; every other tool reads the server directly. Search is case- and accent-insensitive, every word must appear in the name, with optional `type`, `class` and `in_path` filters.
+- **Fast search**: the cozy-stack has no server-side search (a Mango `$regex` on names scans every document and times out on large drives). Like the Twake Drive apps, the server keeps a **local replica of the file metadata** (the `io.cozy.files` documents, no content), kept by `cozy-pouch-link` in one SQLite file per instance, with `0600` permissions, and refreshed incrementally before each search. The replica is only built by the first search; every other tool reads the server directly. Search is case- and accent-insensitive, every word must appear in the name, with optional `type`, `class` and `in_path` filters.
 - **Collaborative notes as Markdown**: `.cozy-note` files are returned as Markdown by `read_file`, and `create_note` turns Markdown into a real collaborative note.
 - **No password, no OAuth flow inside**: short-lived access tokens come from an external broker you control.
 
 ## Requirements
 
-- **Node.js** >= 20
+- **Node.js** >= 24.16 (`search_files` stores its replica with the built-in `node:sqlite`)
 - A **Twake Drive** account (or any cozy-stack instance)
 - An **MCP client**: Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code, or any MCP-compatible assistant
 
@@ -93,7 +93,7 @@ npm run build          # then run: node build/index.js
 | `TWAKE_DRIVE_TOKEN` | yes\* | Static token (development only) |
 | `TWAKE_DRIVE_DOWNLOAD_DIR` | no | Where `download_file` writes, default `~/Downloads/twake-drive` |
 | `TWAKE_DRIVE_UPLOAD_DIR` | no | Where `upload_file` and `update_file_content` read `local_path`, default `TWAKE_DRIVE_DOWNLOAD_DIR` |
-| `TWAKE_DRIVE_CACHE_DIR` | no | Search index location, default `~/.cache/mcp-twake-drive` |
+| `TWAKE_DRIVE_CACHE_DIR` | no | Search replica location, default `~/.cache/mcp-twake-drive` |
 | `TWAKE_DRIVE_MAX_TEXT_CHARS` | no | `read_file` truncation, default `60000` |
 
 \* one of the two.
