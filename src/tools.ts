@@ -16,7 +16,7 @@ import {
   buildRecentFilesQuery,
 } from './queries.js';
 import { isTar, isTextLike, markdownFromTar, summarize, webLink, withExtension } from './format.js';
-import type { FileIndex, Hit } from './file-index.js';
+import type { Hit, createSearch } from './search.js';
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
 
@@ -95,7 +95,7 @@ async function assertInside(root: string, target: string, variable: string): Pro
   }
 }
 
-export function registerTools(server: McpServer, client: any, config: Config, index: FileIndex): void {
+export function registerTools(server: McpServer, client: any, config: Config, search: ReturnType<typeof createSearch>): void {
   const stack = client.getStackClient();
 
   const wrap = <A>(fn: (args: A) => Promise<unknown>) => async (args: A) => {
@@ -259,8 +259,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       annotations: READ,
     },
     wrap(async (a: { query: string; type: 'file' | 'directory' | 'any'; class?: string; in_path?: string; limit: number }) => {
-      await index.sync();
-      const res = index.search(a.query, { type: a.type, class: a.class, inPath: a.in_path, limit: a.limit });
+      const res = await search.search(a.query, { type: a.type, class: a.class, inPath: a.in_path, limit: a.limit });
       return { query: a.query, total: res.total, returned: res.hits.length, items: res.hits.map((h: Hit) => sum({ id: h.id, attributes: h })) };
     })
   );

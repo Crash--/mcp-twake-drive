@@ -33,7 +33,7 @@ src/
   config.ts        # environment validation
   drive.ts         # cozy-client plugged on the token source
   queries.ts       # every Q() definition, alias and fetch policy
-  file-index.ts    # local metadata index used by search_files
+  search.ts        # local replica used by search_files (cozy-pouch-link, SQLite)
   token-command.ts # access token from an external broker
   tools.ts         # MCP tool implementations
   format.ts        # AI-friendly output

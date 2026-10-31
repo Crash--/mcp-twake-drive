@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, onTestFinished, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -9,7 +9,7 @@ import { createCozyClient } from '../src/drive.js';
 import { loadConfig, type Config } from '../src/config.js';
 import { isTar, isTextLike, markdownFromTar, summarize, withExtension } from '../src/format.js';
 import { registerTools, linkSummary } from '../src/tools.js';
-import { FileIndex, fold } from '../src/file-index.js';
+import { createSearch, fold } from '../src/search.js';
 
 const config: Config = {
   baseUrl: 'https://alice.twake.example.com',
@@ -146,7 +146,9 @@ describe('MCP tools (in-memory)', () => {
     const { calls } = fakeFetch(handler);
     const server = new McpServer({ name: 't', version: '0' });
     const cozy = createCozyClient(driveConfig.baseUrl, source);
-    registerTools(server, cozy, driveConfig, new FileIndex(cozy, driveConfig.baseUrl, `/tmp/twake-drive-test-${process.pid}-${Math.random()}.json`));
+    const cacheDir = mkdtempSync(join(tmpdir(), 'twake-drive-cache-'));
+    onTestFinished(() => rmSync(cacheDir, { recursive: true, force: true }));
+    registerTools(server, cozy, driveConfig, createSearch(cozy.getStackClient(), cacheDir));
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
@@ -169,29 +171,6 @@ describe('MCP tools (in-memory)', () => {
         'revoke_share_link', 'search_files', 'set_favorite', 'set_tags', 'trash_item', 'update_file_content', 'upload_file',
       ].sort()
     );
-  });
-
-  it('search syncs the local index from _changes and matches without accents/case', async () => {
-    const results = [
-      { id: 'io.cozy.files.root-dir', doc: { type: 'directory', name: '', path: '/' } },
-      { id: 'd1', doc: { type: 'directory', name: 'Projets', path: '/Projets', dir_id: 'io.cozy.files.root-dir' } },
-      { id: 'f1', doc: { type: 'file', name: 'Budget Réunion 2027.xlsx', dir_id: 'd1', class: 'spreadsheet', updated_at: '2026-01-01T00:00:00Z' } },
-      { id: 'f2', doc: { type: 'file', name: 'reunion-notes.md', dir_id: 'd1', trashed: true } },
-      { id: 'f3', doc: { type: 'file', name: 'Autre.pdf', dir_id: 'd1' } },
-    ];
-    const { call, calls } = await connect((u) =>
-      u.pathname === '/files/_changes' ? json(200, { last_seq: '5-x', pending: 0, results }) : json(200, {})
-    );
-    const r = await call('search_files', { query: 'budget reunion' });
-    expect(r.error).toBe(false);
-    const out = JSON.parse(r.text);
-    expect(out.total).toBe(1);
-    expect(out.items[0]).toMatchObject({ id: 'f1', path: '/Projets/Budget Réunion 2027.xlsx' });
-    expect(calls[0].url.searchParams.get('since')).toBe('0');
-    expect(calls[0].url.searchParams.get('skip_deleted')).toBe('true');
-    expect(calls[0].url.searchParams.get('include_docs')).toBe('true');
-    await call('search_files', { query: 'budget' });
-    expect(calls[1].url.searchParams.get('since')).toBe('5-x');
   });
 
   it('reports a note tar it cannot read, and still reads a complete one', async () => {

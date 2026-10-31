@@ -12,8 +12,7 @@ import { loadConfig } from './config.js';
 import { ROOT_DIR_ID, createCozyClient, type TokenSource } from './drive.js';
 import { CommandTokenProvider } from './token-command.js';
 import { registerTools } from './tools.js';
-import { FileIndex } from './file-index.js';
-import { join } from 'node:path';
+import { createSearch } from './search.js';
 
 const VERSION = '0.1.0';
 
@@ -35,11 +34,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const host = new URL(config.baseUrl).host;
-  const index = new FileIndex(client, config.baseUrl, join(config.cacheDir, `${host}.json`));
+  const search = createSearch(client.getStackClient(), config.cacheDir);
 
   const server = new McpServer({ name: 'mcp-twake-drive', version: VERSION });
-  registerTools(server, client, config, index);
+  registerTools(server, client, config, search);
   await server.connect(new StdioServerTransport());
   process.stderr.write(`mcp-twake-drive ${VERSION} connected to ${config.baseUrl}\n`);
 }
