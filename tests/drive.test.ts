@@ -122,6 +122,20 @@ describe('helpers', () => {
     expect(isTextLike('application/octet-stream', 'x.md')).toBe(true);
     expect(isTextLike('application/pdf', 'x.pdf')).toBe(false);
   });
+  it('gives up on a tar entry with an invalid size', () => {
+    const tarWithSize = (size: string, entry = 'image.png') => {
+      const enc = new TextEncoder();
+      const tar = new Uint8Array(512 * 2);
+      tar.set(enc.encode(entry), 0);
+      tar.set(enc.encode(size), 124);
+      tar.set(enc.encode('ustar'), 257);
+      return tar;
+    };
+    expect(markdownFromTar(tarWithSize('-1000'))).toBe(undefined);
+    expect(markdownFromTar(tarWithSize('zzz', 'index.md'))).toBe(undefined);
+    expect(markdownFromTar(tarWithSize('77777', 'index.md'))).toBe(undefined);
+  });
+
   it('extracts index.md from a note tar', () => {
     const header = new Uint8Array(512);
     const enc = new TextEncoder();
@@ -203,6 +217,29 @@ describe('MCP tools (in-memory)', () => {
     const recent = JSON.parse((await call('list_recent_files', {})).text);
     expect(recent.items.map((i: any) => i.id)).toEqual(['f1']); // f2 trashed, f3 has no date
     expect(calls[1].url.searchParams.get('since')).toBe('5-x');
+  });
+
+  it('reports a note tar it cannot read, and still reads a complete one', async () => {
+    const tar = (size: number, stored: number) => {
+      const enc = new TextEncoder();
+      const bytes = new Uint8Array(512 + stored);
+      bytes.set(enc.encode('index.md'), 0);
+      bytes.set(enc.encode(size.toString(8).padStart(11, '0')), 124);
+      bytes.set(enc.encode('ustar'), 257);
+      bytes.fill(97, 512);
+      return bytes;
+    };
+    let body = tar(800, 300);
+    const { call } = await connect((u) =>
+      u.pathname.startsWith('/files/download/')
+        ? new Response(body, { status: 200 })
+        : json(200, { data: { id: 'f', attributes: { type: 'file', name: 'n.cozy-note', mime: 'text/vnd.cozy.note+markdown' } } })
+    );
+    const cut = await call('read_file', { id: 'f' });
+    expect(cut.error).toBe(true);
+    expect(cut.text).toMatch(/n\.cozy-note.*damaged/);
+    body = tar(800, 800);
+    expect(JSON.parse((await call('read_file', { id: 'f' })).text).chars).toBe(800);
   });
 
   describe('local paths', () => {

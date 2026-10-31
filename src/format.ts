@@ -130,6 +130,7 @@ export function markdownFromTar(bytes: Uint8Array): string | undefined {
     if (!name) return undefined;
     const size = parseInt(dec.decode(header.slice(124, 136)).replace(/\0.*$/s, '').trim() || '0', 8);
     const start = offset + 512;
+    if (!Number.isInteger(size) || size < 0 || start + size > bytes.length) return undefined;
     if (name === 'index.md' || name.endsWith('/index.md')) return dec.decode(bytes.slice(start, start + size));
     offset = start + Math.ceil(size / 512) * 512;
   }
