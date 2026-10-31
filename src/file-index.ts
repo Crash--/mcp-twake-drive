@@ -1,5 +1,5 @@
 /**
- * Local metadata index of the drive, for name search and "recent files".
+ * Local metadata index of the drive, for name search.
  *
  * The cozy-stack has no server-side search: a Mango `$regex` on names scans
  * every document and times out on a large drive, which is why the Twake Drive
@@ -140,12 +140,6 @@ export class FileIndex {
     this.lastSync = new Date();
   }
 
-  /** Path of a folder known to the index (after a sync). */
-  dirPath(id: string): string | undefined {
-    if (id === 'io.cozy.files.root-dir') return '/';
-    return this.entries.get(id)?.path;
-  }
-
   private pathOf(id: string, e: Entry): string | undefined {
     if (e.t === 'd') return e.path;
     const parent = e.p ? this.entries.get(e.p) : undefined;
@@ -202,21 +196,5 @@ export class FileIndex {
     }
     scored.sort((a, b) => b.score - a.score || (a.u < b.u ? 1 : a.u > b.u ? -1 : 0));
     return { total: scored.length, hits: scored.slice(0, opts.limit).map((s) => s.hit) };
-  }
-
-  /** Most recently updated files (dates in the future are ignored: bogus client clocks). */
-  recent(limit: number, inPath?: string): Hit[] {
-    const horizon = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-    const scope = inPath ? fold(inPath.replace(/\/+$/, '')) : undefined;
-    const files: Array<{ u: string; hit: Hit }> = [];
-    for (const [id, e] of this.entries) {
-      if (e.t !== 'f' || !e.u || e.u > horizon) continue;
-      const path = this.pathOf(id, e);
-      if (!this.visible(id, e, path)) continue;
-      if (scope && !(path && fold(path).startsWith(scope + '/'))) continue;
-      files.push({ u: e.u, hit: this.hit(id, e, path) });
-    }
-    files.sort((a, b) => (a.u < b.u ? 1 : a.u > b.u ? -1 : 0));
-    return files.slice(0, limit).map((f) => f.hit);
   }
 }

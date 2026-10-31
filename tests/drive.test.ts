@@ -397,6 +397,37 @@ describe('MCP tools (in-memory)', () => {
     });
   });
 
+  const findBody = (c: { init: RequestInit }) => JSON.parse(String(c.init.body));
+
+  it('reads recents and favourites through indexed queries, without the changes feed', async () => {
+    const { call, calls } = await connect((u) => {
+      if (u.pathname === '/data/io.cozy.files/_index') return json(200, { id: '_design/x', result: 'exists' });
+      if (u.pathname === '/files/_find') {
+        return json(200, {
+          data: [{ id: 'f1', type: 'io.cozy.files', attributes: { type: 'file', name: 'a.txt', path: '/a.txt' } }],
+          meta: { count: 1 },
+          links: { next: '/files/_find?page[cursor]=bm1' },
+        });
+      }
+      return json(404, {});
+    });
+    const recent = JSON.parse((await call('list_recent_files', { limit: 1 })).text);
+    expect(recent).toMatchObject({ count: 1, next_cursor: 'bm1', items: [{ id: 'f1', path: '/a.txt' }] });
+    const body = findBody(calls.find((c) => c.url.pathname === '/files/_find')!);
+    expect(body.sort).toEqual([{ updated_at: 'desc' }]);
+    expect(body.selector.updated_at.$gt).toBe(null);
+    expect(body.selector.updated_at.$lte).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+    expect(body.selector).toMatchObject({ type: 'file', trashed: false });
+
+    await call('list_recent_files', { limit: 1, cursor: 'bm1' });
+    expect(findBody(calls.at(-1)!).bookmark).toBe('bm1');
+
+    const favorites = JSON.parse((await call('list_favorites', { limit: 1 })).text);
+    expect(favorites).toMatchObject({ count: 1, next_cursor: 'bm1' });
+    expect(findBody(calls.at(-1)!).selector).toMatchObject({ 'cozyMetadata.favorite': true });
+    expect(calls.some((c) => c.url.pathname.endsWith('/_changes'))).toBe(false);
+  });
+
   it('lists a folder with one paged request on its own route, by id and by path', async () => {
     const { call, calls } = await connect((u) =>
       json(200, {

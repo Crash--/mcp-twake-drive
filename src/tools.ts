@@ -7,7 +7,14 @@ import { z } from 'zod';
 import { models } from 'cozy-client';
 import type { Config } from './config.js';
 import { DriveError, NOTE_SCHEMA, ROOT_DIR_ID, normalizePath, type CozyDoc } from './drive.js';
-import { FILES_DOCTYPE, TRASH_DIR_ID, buildDiskUsageQuery } from './queries.js';
+import {
+  FILES_DOCTYPE,
+  TRASH_DIR_ID,
+  buildDiskUsageQuery,
+  buildFavoritesQuery,
+  buildRecentFilesInFolderQuery,
+  buildRecentFilesQuery,
+} from './queries.js';
 import {
   guessMime,
   humanSize,
@@ -74,6 +81,10 @@ function nextCursor(res: { links?: { next?: string } }, baseUrl: string): string
   return res.links?.next ? new URL(res.links.next, baseUrl).searchParams.get('page[cursor]') ?? undefined : undefined;
 }
 
+/** A Q() page: the stack only gives a bookmark, a full page may have more. */
+function nextBookmark(res: { data: unknown[]; bookmark?: string }, limit: number): string | undefined {
+  return res.data.length === limit ? res.bookmark : undefined;
+}
 
 function requireRef(ref: Ref, what = 'item'): void {
   if (!ref.id && !ref.path) throw new DriveError(`Give the ${what} id or path`, 400);
@@ -159,36 +170,6 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       app
     );
   const sum = (doc: CozyDoc, extra: { dirPath?: string; driveId?: string } = {}) => summarize(doc, app, extra);
-
-  /** Folder paths: from the local index, else one stat per unknown folder. */
-  const folderPaths = async (dirIds: string[]): Promise<Record<string, string>> => {
-    const out: Record<string, string> = {};
-    const unique = [...new Set(dirIds.filter(Boolean))];
-    await index.sync().catch(() => {});
-    const missing: string[] = [];
-    for (const id of unique) {
-      const p = index.dirPath(id);
-      if (p) out[id] = p;
-      else missing.push(id);
-    }
-    await Promise.all(
-      missing.slice(0, 30).map(async (id) => {
-        try {
-          const p = (await stat(id)).data.attributes.path;
-          if (p) out[id] = p;
-        } catch {
-          /* unknown folder: no path */
-        }
-      })
-    );
-    return out;
-  };
-
-  /** Summaries of files enriched with their folder path. */
-  const withPaths = async (docs: CozyDoc[]) => {
-    const paths = await folderPaths(docs.filter((d) => d.attributes.type !== 'directory').map((d) => d.attributes.dir_id));
-    return docs.map((d) => sum(d, { dirPath: paths[d.attributes.dir_id] }));
-  };
 
   /** Upload with a name-conflict policy. */
   const uploadWithPolicy = async (
@@ -279,9 +260,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const doc: CozyDoc = res.data;
       let dirPath: string | undefined;
       if (doc.attributes.type !== 'directory' && doc.attributes.dir_id) {
-        dirPath = a.drive_id
-          ? (await stat(doc.attributes.dir_id, a.drive_id).catch(() => undefined))?.data.attributes.path
-          : (await folderPaths([doc.attributes.dir_id]))[doc.attributes.dir_id];
+        dirPath = (await stat(doc.attributes.dir_id, a.drive_id).catch(() => undefined))?.data.attributes.path;
       }
       const versions = ((res.included ?? []) as CozyDoc[])
         .filter((d) => d.type === 'io.cozy.files.versions')
@@ -324,17 +303,21 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     'list_recent_files',
     {
       title: 'Recent files',
-      description: 'Most recently modified files, newest first (optionally inside a folder).',
+      description: 'Most recently modified files, newest first (optionally directly inside a folder). Paginated: pass next_cursor back as cursor.',
       inputSchema: {
         limit: z.number().int().min(1).max(200).default(20),
-        in_path: z.string().optional().describe('Only inside this folder (absolute path)'),
+        in_path: z.string().optional().describe('Only files directly inside this folder (absolute path)'),
+        cursor: z.string().optional().describe('next_cursor from a previous call'),
       },
       annotations: READ,
     },
-    wrap(async (a: { limit: number; in_path?: string }) => {
-      await index.sync();
-      const hits = index.recent(a.limit, a.in_path);
-      return { count: hits.length, items: hits.map(hitSummary) };
+    wrap(async (a: { limit: number; in_path?: string; cursor?: string }) => {
+      const dirId = a.in_path ? await resolveDirId({ path: a.in_path }) : undefined;
+      const horizon = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+      const page = { limit: a.limit, bookmark: a.cursor };
+      const query = dirId ? buildRecentFilesInFolderQuery(dirId, horizon, page) : buildRecentFilesQuery(horizon, page);
+      const res = await client.query(query.definition, query.options);
+      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: nextBookmark(res, a.limit) };
     })
   );
 
@@ -342,17 +325,17 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     'list_favorites',
     {
       title: 'Favourites',
-      description: 'Files and folders marked as favourite.',
-      inputSchema: { limit: z.number().int().min(1).max(200).default(100) },
+      description: 'Files and folders marked as favourite. Paginated: pass next_cursor back as cursor.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(200).default(100),
+        cursor: z.string().optional().describe('next_cursor from a previous call'),
+      },
       annotations: READ,
     },
-    wrap(async (a: { limit: number }) => {
-      const { id: useIndex } = await stack.fetchJSON('POST', '/data/io.cozy.files/_index', { index: { fields: ['cozyMetadata.favorite'] } });
-      const res = await stack.fetchJSON('POST', '/files/_find', { selector: { 'cozyMetadata.favorite': true }, use_index: useIndex, limit: a.limit });
-      const items = (await withPaths((res.data as CozyDoc[]).filter((d) => !d.attributes.trashed))).filter(
-        (i) => !i.path?.startsWith('/.cozy_trash')
-      );
-      return { count: items.length, items };
+    wrap(async (a: { limit: number; cursor?: string }) => {
+      const query = buildFavoritesQuery({ limit: a.limit, bookmark: a.cursor });
+      const res = await client.query(query.definition, query.options);
+      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: nextBookmark(res, a.limit) };
     })
   );
 
