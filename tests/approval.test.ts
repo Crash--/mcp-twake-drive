@@ -109,7 +109,8 @@ describe('prior approval of writes', () => {
   it('covers every write tool', async () => {
     const { call } = await connect('accept');
     void call;
-    const READ_ONLY = ['get_drive_info', 'list_folder', 'get_item', 'search_files', 'list_recent_files', 'list_favorites', 'list_trash', 'read_file', 'download_file', 'list_shared_drives', 'list_sharings', 'list_share_links'];
+    const READ_ONLY = ['get_drive_info', 'list_folder', 'get_item', 'search_files', 'list_recent_files', 'list_favorites', 'list_trash', 'read_file', 'list_shared_drives', 'list_sharings', 'list_share_links'];
+    const LOCAL_WRITE = 'download_file';
     const server = new McpServer({ name: 't', version: '0' });
     const { impl } = stack();
     const drive = new DriveClient(config, { getToken: async () => 'tok', invalidate: () => {} }, impl);
@@ -117,8 +118,10 @@ describe('prior approval of writes', () => {
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
-    const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names.filter((n) => !READ_ONLY.includes(n)).sort()).toEqual(WRITES.map(([n]) => n).sort());
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name);
+    expect(names.filter((n) => !READ_ONLY.includes(n) && n !== LOCAL_WRITE).sort()).toEqual(WRITES.map(([n]) => n).sort());
+    for (const t of tools) expect(t.annotations?.readOnlyHint, t.name).toBe(READ_ONLY.includes(t.name));
   });
 
   it.each(WRITES)('%s writes only after the user accepts', async (tool, args) => {
