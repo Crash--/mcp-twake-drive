@@ -22,7 +22,6 @@ All notable changes to mcp-twake-drive are documented here. The format follows [
 - `create_folder` without `parents` names the direct parent when it is missing.
 
 ### Removed
-- `TWAKE_DRIVE_TIMEOUT_MS`: cozy-client has no request timeout.
 - `TWAKE_DRIVE_APP_URL`: links always use the `<instance>-drive.<domain>` form.
 
 ## [0.2.0] - 2026-11-01

@@ -46,6 +46,17 @@ describe('config', () => {
     expect(loadConfig(env).uploadDir).toBe('/d');
     expect(loadConfig({ ...env, TWAKE_DRIVE_UPLOAD_DIR: '/u' }).uploadDir).toBe('/u');
   });
+  it('gives requests 50 s unless told otherwise, and hands that to the stack client', () => {
+    const env = { TWAKE_DRIVE_URL: 'https://x.example.com', TWAKE_DRIVE_TOKEN: 't' };
+    expect(loadConfig(env).timeoutMs).toBe(50000);
+    const { timeoutMs } = loadConfig({ ...env, TWAKE_DRIVE_TIMEOUT_MS: '5000' });
+    expect(timeoutMs).toBe(5000);
+    expect(createCozyClient(config.baseUrl, tokens(), timeoutMs).getStackClient().options.timeout).toBe(5000);
+  });
+  it.each(['abc', '', ' ', '0', '-1', '1.5'])('refuses TWAKE_DRIVE_TIMEOUT_MS=%j', (value) => {
+    const env = { TWAKE_DRIVE_URL: 'https://x.example.com', TWAKE_DRIVE_TOKEN: 't', TWAKE_DRIVE_TIMEOUT_MS: value };
+    expect(() => loadConfig(env)).toThrow(/TWAKE_DRIVE_TIMEOUT_MS/);
+  });
   it('refuses plain HTTP and missing credentials', () => {
     expect(() => loadConfig({ TWAKE_DRIVE_URL: 'http://x.example.com', TWAKE_DRIVE_TOKEN: 't' })).toThrow(/HTTPS/);
     expect(() => loadConfig({ TWAKE_DRIVE_URL: 'https://x.example.com' })).toThrow(/TOKEN/);
@@ -636,6 +647,15 @@ describe('MCP tools (in-memory)', () => {
       ['/sharings/drives/drv/drive-dir', 'a'],
       ['/sharings/drives/drv/new-a', 'b'],
     ]);
+  });
+
+  it('names the setting when a request runs out of time', async () => {
+    const { call } = await connect(() => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+    const r = await call('get_item', { id: 'f' });
+    expect(r.error).toBe(true);
+    expect(r.text).toBe('Error: Twake Drive did not answer in time (TWAKE_DRIVE_TIMEOUT_MS)');
   });
 
   it('trims a name before looking for a conflict', async () => {

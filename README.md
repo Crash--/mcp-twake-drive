@@ -102,6 +102,7 @@ npm run build          # then run: node build/index.js
 | `TWAKE_DRIVE_APPROVAL` | no | `elicit` (default): the server asks you before every write to the drive; `client`: your MCP client confirms |
 | `TWAKE_DRIVE_APPROVAL_TIMEOUT_MS` | no | How long an approval prompt waits for your answer, default `600000` |
 | `USER_LANGUAGE` | no | Language of the approval prompts, `en` (default) or `fr` |
+| `TWAKE_DRIVE_TIMEOUT_MS` | no | Time given to each request to the instance, transfers included, default `50000`, below the 60 s after which the MCP SDK client stops waiting: raising it past that needs the client's own limit raised too |
 
 \* one of the two.
 

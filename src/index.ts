@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const tokens: TokenSource = config.tokenCommand
     ? new CommandTokenProvider(config.tokenCommand)
     : { getToken: async () => config.token!, invalidate: () => {} };
-  const client = createCozyClient(config.baseUrl, tokens);
+  const client = createCozyClient(config.baseUrl, tokens, config.timeoutMs);
 
   // Fail fast with an actionable message rather than exposing broken tools.
   try {
