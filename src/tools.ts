@@ -389,7 +389,9 @@ export function registerTools(
         throw new DriveError(`${name} (${meta.attributes.mime}) is not a text file: use download_file`, 415);
       }
       const { bytes } = await drive.download(meta.id, a.drive_id);
-      let content = isTar(bytes) ? markdownFromTar(bytes) ?? '' : new TextDecoder().decode(bytes);
+      const markdown = isTar(bytes) ? markdownFromTar(bytes) : new TextDecoder().decode(bytes);
+      if (markdown === undefined) throw new DriveError(`${name} is a damaged note: its archive has no readable index.md`, 422);
+      let content = markdown;
       const max = a.max_chars ?? drive.config.maxTextChars;
       const truncated = content.length > max;
       if (truncated) content = content.slice(0, max);
