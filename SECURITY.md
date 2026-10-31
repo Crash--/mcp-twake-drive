@@ -35,11 +35,11 @@ We will acknowledge your report within **5 business days**, keep you informed of
 An MCP server acts **with the full rights of the account it is configured with**. Keep these points in mind:
 
 - **Credentials**: the server never runs an OAuth flow and never sees a password. It gets short-lived access tokens from `TWAKE_DRIVE_TOKEN_COMMAND` (a broker you control); `TWAKE_DRIVE_TOKEN` is for development only.
-- **Prior approval**: with `TWAKE_DRIVE_APPROVAL=elicit` (the default), the server asks the user, through MCP elicitation, to approve every write before doing it, with the drive, the full paths, what changes and a unique reference. It fails closed: refusal, timeout, error or a client without elicitation means nothing is written. `TWAKE_DRIVE_APPROVAL=client` hands this to the MCP client and should only be used with a client that confirms every write.
+- **Prior approval**: with `TWAKE_DRIVE_APPROVAL=elicit` (the default), the server asks the user, through MCP elicitation, to approve every write to the drive before doing it, with the drive, the full paths, what changes and a unique reference. It fails closed: refusal, timeout, error or a client without elicitation means nothing is written. `TWAKE_DRIVE_APPROVAL=client` hands this to the MCP client and should only be used with a client that confirms every write.
 - **Public links**: `create_share_link` makes a file reachable by **anyone with the link**; the approval prompt shows the item, the rights (read-only by default), whether a password is set and the expiry.
 - **Irreversible tools**: `delete_permanently` and `empty_trash` cannot be undone. Exclude them in your MCP client unless you really need them; `trash_item` is reversible with `restore_from_trash`.
 - **Overwrites**: uploads default to `on_conflict: error`; `overwrite` creates a new version of an existing file.
-- **Local files**: `upload_file` reads `local_path` and `download_file` writes to `TWAKE_DRIVE_DOWNLOAD_DIR`; run the server with an account that can only reach the files it should. The search index in `TWAKE_DRIVE_CACHE_DIR` holds file names and paths (no content) with `0600` permissions.
+- **Local files**: `upload_file` reads `local_path`, `download_file` writes to `TWAKE_DRIVE_DOWNLOAD_DIR`, without an approval prompt since it only adds new files there and changes nothing in the drive, and `update_file_content` reads `local_path` from it; run the server with an account that can only reach the files it should. The search index in `TWAKE_DRIVE_CACHE_DIR` holds file names and paths (no content) with `0600` permissions.
 - **Prompt injection**: documents and notes may be written by third parties; treat their content as untrusted.
 
 General recommendations:

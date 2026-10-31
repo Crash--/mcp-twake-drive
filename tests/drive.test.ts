@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -152,10 +155,10 @@ describe('helpers', () => {
 });
 
 describe('MCP tools (in-memory)', () => {
-  async function connect(handler: Handler) {
+  async function connect(handler: Handler, driveConfig = config) {
     const { impl, calls } = fakeFetch(handler);
     const server = new McpServer({ name: 't', version: '0' });
-    const drive = new DriveClient(config, tokens(), impl);
+    const drive = new DriveClient(driveConfig, tokens(), impl);
     registerTools(server, drive, new FileIndex(drive, `/tmp/twake-drive-test-${process.pid}-${Math.random()}.json`));
     const [a, b] = InMemoryTransport.createLinkedPair();
     const prompts: string[] = [];
@@ -206,6 +209,138 @@ describe('MCP tools (in-memory)', () => {
     const recent = JSON.parse((await call('list_recent_files', {})).text);
     expect(recent.items.map((i: any) => i.id)).toEqual(['f1']); // f2 trashed, f3 has no date
     expect(calls[1].url.searchParams.get('since')).toBe('5-x');
+  });
+
+  describe('local paths', () => {
+    let tmp: string;
+    let downloadDir: string;
+    let outside: string;
+    beforeEach(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'twake-drive-dl-'));
+      downloadDir = join(tmp, 'downloads');
+      outside = join(tmp, 'outside');
+      mkdirSync(downloadDir);
+      mkdirSync(outside);
+    });
+    afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+    const connectFile = () =>
+      connect(
+        (u, init) =>
+          u.pathname.startsWith('/files/download/')
+            ? new Response('remote', { status: 200 })
+            : json(200, { data: { id: 'f', attributes: { type: 'file', name: init.method === 'PUT' ? 'put.txt' : 'a.txt' } } }),
+        { ...config, downloadDir }
+      );
+    const downloads = (calls: { url: URL }[]) => calls.filter((c) => c.url.pathname.startsWith('/files/download/'));
+    const puts = (calls: { method: string }[]) => calls.filter((c) => c.method === 'PUT');
+
+    it('declares that it writes, without replacing anything', async () => {
+      const { client } = await connectFile();
+      const tool = (await client.listTools()).tools.find((t) => t.name === 'download_file');
+      expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    });
+
+    it('refuses the parent of the folder itself', async () => {
+      const { call } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: `${downloadDir}/..` })).error).toBe(true);
+      expect(existsSync(join(tmp, 'a.txt'))).toBe(false);
+    });
+
+    it('accepts a name that only starts with two dots', async () => {
+      const { call } = await connectFile();
+      mkdirSync(join(downloadDir, '..dir'));
+      const named = join(downloadDir, '..dir', 'b.txt');
+      expect((await call('download_file', { id: 'f', save_to: named })).error).toBe(false);
+      expect(readFileSync(named, 'utf8')).toBe('remote');
+    });
+
+    it('works when the download folder is itself a symlink', async () => {
+      const link = join(tmp, 'link-to-downloads');
+      symlinkSync(downloadDir, link);
+      const { call } = await connect(
+        (u) =>
+          u.pathname.startsWith('/files/download/')
+            ? new Response('remote', { status: 200 })
+            : json(200, { data: { id: 'f', attributes: { type: 'file', name: 'a.txt' } } }),
+        { ...config, downloadDir: link }
+      );
+      expect((await call('download_file', { id: 'f' })).error).toBe(false);
+      expect(readFileSync(join(downloadDir, 'a.txt'), 'utf8')).toBe('remote');
+    });
+
+    it('refuses a download outside the folder and leaves the target untouched', async () => {
+      const target = join(outside, 'target');
+      writeFileSync(target, 'local');
+      const { call, calls } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: target })).error).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('local');
+      expect(downloads(calls)).toHaveLength(0);
+    });
+
+    it('refuses a new folder created outside, and a ../ path', async () => {
+      const { call } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: join(outside, 'new', 'x') })).error).toBe(true);
+      expect(existsSync(join(outside, 'new'))).toBe(false);
+      expect((await call('download_file', { id: 'f', save_to: `${downloadDir}/../outside/x` })).error).toBe(true);
+      expect(existsSync(join(outside, 'x'))).toBe(false);
+    });
+
+    it('refuses a symlinked folder that leaves the download folder', async () => {
+      symlinkSync(outside, join(downloadDir, 'link'));
+      const { call } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: join(downloadDir, 'link', 'x') })).error).toBe(true);
+      expect((await call('download_file', { id: 'f', save_to: join(downloadDir, 'link') })).error).toBe(true);
+      expect(existsSync(join(outside, 'x'))).toBe(false);
+      expect(existsSync(join(outside, 'a.txt'))).toBe(false);
+    });
+
+    it('does not write through a dangling symlink', async () => {
+      const target = join(outside, 'not-yet');
+      symlinkSync(target, join(downloadDir, 'dangling'));
+      const { call } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: join(downloadDir, 'dangling') })).error).toBe(true);
+      expect(existsSync(target)).toBe(false);
+    });
+
+    it('never overwrites an existing file', async () => {
+      const existing = join(downloadDir, 'kept.txt');
+      writeFileSync(existing, 'local');
+      const { call } = await connectFile();
+      expect((await call('download_file', { id: 'f', save_to: existing })).error).toBe(true);
+      expect(readFileSync(existing, 'utf8')).toBe('local');
+    });
+
+    it('downloads inside the folder, by default and with save_to', async () => {
+      const { call } = await connectFile();
+      const first = JSON.parse((await call('download_file', { id: 'f' })).text);
+      const second = JSON.parse((await call('download_file', { id: 'f' })).text);
+      expect(first.local_path).toBe(join(downloadDir, 'a.txt'));
+      expect(second.local_path).toBe(join(downloadDir, 'a (2).txt'));
+      const nested = join(downloadDir, 'sub', 'b.txt');
+      expect(JSON.parse((await call('download_file', { id: 'f', save_to: nested })).text).local_path).toBe(nested);
+      expect(readFileSync(nested, 'utf8')).toBe('remote');
+    });
+
+    it('refuses to replace a file with a local file outside the folder', async () => {
+      const other = join(outside, 'other');
+      writeFileSync(other, 'local');
+      symlinkSync(other, join(downloadDir, 'link-to-other'));
+      const { call, calls } = await connectFile();
+      expect((await call('update_file_content', { id: 'f', local_path: other })).error).toBe(true);
+      expect((await call('update_file_content', { id: 'f', local_path: join(downloadDir, 'link-to-other') })).error).toBe(true);
+      expect((await call('update_file_content', { id: 'f', local_path: 'relative.txt' })).error).toBe(true);
+      expect(puts(calls)).toHaveLength(0);
+    });
+
+    it('replaces a file from a local file inside the folder, or from content', async () => {
+      const edited = join(downloadDir, 'edited.txt');
+      writeFileSync(edited, 'edited');
+      const { call, calls } = await connectFile();
+      expect((await call('update_file_content', { id: 'f', local_path: edited })).error).toBe(false);
+      expect((await call('update_file_content', { id: 'f', content: 'text' })).error).toBe(false);
+      expect(puts(calls)).toHaveLength(2);
+    });
   });
 
   it('upload renames on conflict when asked', async () => {
