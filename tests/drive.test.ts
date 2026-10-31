@@ -16,6 +16,7 @@ const config: Config = {
   cacheDir: '/tmp/twake-drive-test-cache',
   appUrl: 'https://alice-drive.twake.example.com',
   downloadDir: '/tmp/twake-drive-test',
+  uploadDir: '/tmp/twake-drive-test',
   maxTextChars: 1000,
   timeoutMs: 5000,
 };
@@ -42,6 +43,11 @@ describe('config', () => {
   it('derives the drive app URL from the instance', () => {
     expect(deriveAppUrl('https://alice.twake.example.com')).toBe('https://alice-drive.twake.example.com');
     expect(deriveAppUrl('https://a.b.c', 'notes')).toBe('https://a-notes.b.c');
+  });
+  it('reads uploads from the download folder unless told otherwise', () => {
+    const env = { TWAKE_DRIVE_URL: 'https://x.example.com', TWAKE_DRIVE_TOKEN: 't', TWAKE_DRIVE_DOWNLOAD_DIR: '/d' };
+    expect(loadConfig(env).uploadDir).toBe('/d');
+    expect(loadConfig({ ...env, TWAKE_DRIVE_UPLOAD_DIR: '/u' }).uploadDir).toBe('/u');
   });
   it('refuses plain HTTP and missing credentials', () => {
     expect(() => loadConfig({ TWAKE_DRIVE_URL: 'http://x.example.com', TWAKE_DRIVE_TOKEN: 't' })).toThrow(/HTTPS/);
@@ -261,7 +267,7 @@ describe('MCP tools (in-memory)', () => {
           u.pathname.startsWith('/files/download/')
             ? new Response('remote', { status: 200 })
             : json(200, { data: { id: 'f', attributes: { type: 'file', name: init.method === 'PUT' ? 'put.txt' : 'a.txt' } } }),
-        { ...config, downloadDir }
+        { ...config, downloadDir, uploadDir: downloadDir }
       );
     const downloads = (calls: { url: URL }[]) => calls.filter((c) => c.url.pathname.startsWith('/files/download/'));
     const puts = (calls: { method: string }[]) => calls.filter((c) => c.method === 'PUT');
@@ -362,6 +368,43 @@ describe('MCP tools (in-memory)', () => {
       expect((await call('update_file_content', { id: 'f', local_path: join(downloadDir, 'link-to-other') })).error).toBe(true);
       expect((await call('update_file_content', { id: 'f', local_path: 'relative.txt' })).error).toBe(true);
       expect(puts(calls)).toHaveLength(0);
+    });
+
+    it('refuses to upload a local file outside the upload folder', async () => {
+      const other = join(outside, 'other');
+      writeFileSync(other, 'local');
+      symlinkSync(other, join(downloadDir, 'link-to-other'));
+      const { call, calls } = await connectFile();
+      expect((await call('upload_file', { local_path: other })).error).toBe(true);
+      expect((await call('upload_file', { local_path: join(downloadDir, 'link-to-other') })).error).toBe(true);
+      expect((await call('upload_file', { local_path: 'relative.txt' })).error).toBe(true);
+      expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    });
+
+    it('uploads a local file from the upload folder, or text from anywhere', async () => {
+      const inside = join(downloadDir, 'inside.txt');
+      writeFileSync(inside, 'inside');
+      const { call, calls } = await connectFile();
+      expect((await call('upload_file', { local_path: inside })).error).toBe(false);
+      expect((await call('upload_file', { name: 'b.txt', content: 'text' })).error).toBe(false);
+      expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2);
+    });
+
+    it('reads local files from their own folder when one is set', async () => {
+      const uploads = join(tmp, 'uploads');
+      mkdirSync(uploads);
+      const inside = join(uploads, 'inside.txt');
+      writeFileSync(inside, 'inside');
+      const notThere = join(downloadDir, 'in-downloads.txt');
+      writeFileSync(notThere, 'local');
+      const { call } = await connect(() => json(200, { data: { id: 'f', attributes: { type: 'file', name: 'a.txt' } } }), {
+        ...config,
+        downloadDir,
+        uploadDir: uploads,
+      });
+      expect((await call('upload_file', { local_path: inside })).error).toBe(false);
+      expect((await call('update_file_content', { id: 'f', local_path: inside })).error).toBe(false);
+      expect((await call('upload_file', { local_path: notThere })).error).toBe(true);
     });
 
     it('replaces a file from a local file inside the folder, or from content', async () => {

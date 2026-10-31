@@ -62,11 +62,12 @@ function requireRef(ref: Ref, what = 'item'): void {
   if (!ref.id && !ref.path) throw new DriveError(`Give the ${what} id or path`, 400);
 }
 
-async function loadBytes(args: { local_path?: string; content?: string; content_base64?: string }): Promise<Uint8Array> {
+async function loadBytes(args: { local_path?: string; content?: string; content_base64?: string }, uploadDir: string): Promise<Uint8Array> {
   const given = [args.local_path, args.content, args.content_base64].filter((v) => v !== undefined).length;
   if (given !== 1) throw new DriveError('Give exactly one of local_path, content or content_base64', 400);
   if (args.local_path !== undefined) {
     if (!isAbsolute(args.local_path)) throw new DriveError('local_path must be absolute', 400);
+    await assertInside(uploadDir, args.local_path, 'TWAKE_DRIVE_UPLOAD_DIR');
     return new Uint8Array(await readFile(args.local_path));
   }
   if (args.content !== undefined) return new TextEncoder().encode(args.content);
@@ -74,13 +75,13 @@ async function loadBytes(args: { local_path?: string; content?: string; content_
 }
 
 /** Follows symlinks through the deepest existing ancestor, since the target itself may not exist yet. */
-async function assertInside(root: string, target: string): Promise<void> {
+async function assertInside(root: string, target: string, variable: string): Promise<void> {
   await mkdir(root, { recursive: true });
   let existing = resolvePath(target);
   while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
   const rel = relative(await realpath(root), await realpath(existing));
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new DriveError(`Local path must stay inside ${root} (TWAKE_DRIVE_DOWNLOAD_DIR)`, 400);
+    throw new DriveError(`Local path must stay inside ${root} (${variable})`, 400);
   }
 }
 
@@ -385,7 +386,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
         target = join(drive.config.downloadDir, name);
         for (let n = 2; existsSync(target); n++) target = join(drive.config.downloadDir, variantName(name, n));
       }
-      await assertInside(drive.config.downloadDir, target);
+      await assertInside(drive.config.downloadDir, target, 'TWAKE_DRIVE_DOWNLOAD_DIR');
       await mkdir(dirname(target), { recursive: true });
       const { bytes } = await drive.download(meta.id, a.drive_id);
       await writeFile(target, bytes, { flag: 'wx' }).catch((e: NodeJS.ErrnoException) => {
@@ -506,7 +507,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
         'Create a file in the drive from a local file (local_path), from text (content) or from base64 bytes (content_base64).',
       inputSchema: {
         name: z.string().optional().describe('File name in the drive (default: basename of local_path)'),
-        local_path: z.string().optional().describe('Absolute path of a local file to upload'),
+        local_path: z.string().optional().describe('Absolute path of a local file inside the upload folder (TWAKE_DRIVE_UPLOAD_DIR)'),
         content: z.string().optional().describe('Text content (UTF-8)'),
         content_base64: z.string().optional().describe('Binary content, base64-encoded'),
         mime: z.string().optional().describe('MIME type (guessed from the extension by default)'),
@@ -518,7 +519,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
     wrap(async (a: any) => {
       const name: string | undefined = a.name ?? (a.local_path ? basename(a.local_path) : undefined);
       if (!name) throw new DriveError('name is required when uploading content', 400);
-      const bytes = await loadBytes(a);
+      const bytes = await loadBytes(a, drive.config.uploadDir);
       const dirId = await drive.resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
       const { doc, action } = await uploadWithPolicy(dirId, name, bytes, a.mime ?? guessMime(name), a.on_conflict, a.drive_id);
       return { action, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };
@@ -532,7 +533,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
       description: 'Replace the content of an existing file (the previous content is kept as an old version).',
       inputSchema: {
         ...itemRef,
-        local_path: z.string().optional().describe('Absolute path of a local file inside the download folder'),
+        local_path: z.string().optional().describe('Absolute path of a local file inside the upload folder (TWAKE_DRIVE_UPLOAD_DIR)'),
         content: z.string().optional(),
         content_base64: z.string().optional(),
       },
@@ -542,8 +543,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
       requireRef(a, 'file');
       const meta = (await drive.resolve(a, a.drive_id, { limit: 1 })).data;
       if (meta.attributes.type === 'directory') throw new DriveError('This is a folder', 400);
-      if (a.local_path !== undefined && isAbsolute(a.local_path)) await assertInside(drive.config.downloadDir, a.local_path);
-      const bytes = await loadBytes(a);
+      const bytes = await loadBytes(a, drive.config.uploadDir);
       const doc = await drive.overwrite(meta.id, bytes, meta.attributes.mime ?? guessMime(meta.attributes.name), a.drive_id, meta.meta?.rev);
       return { updated: true, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };
     })

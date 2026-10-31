@@ -37,7 +37,7 @@ An MCP server acts **with the full rights of the account it is configured with**
 - **Public links**: `create_share_link` makes a file reachable by **anyone with the link**. MCP clients should confirm the item, the rights (read-only by default), the password and the expiry.
 - **Irreversible tools**: `delete_permanently` and `empty_trash` cannot be undone. Exclude them in your MCP client unless you really need them; `trash_item` is reversible with `restore_from_trash`.
 - **Overwrites**: uploads default to `on_conflict: error`; `overwrite` creates a new version of an existing file.
-- **Local files**: `upload_file` reads `local_path`, `download_file` writes to `TWAKE_DRIVE_DOWNLOAD_DIR` and `update_file_content` reads `local_path` from it; run the server with an account that can only reach the files it should. The search index in `TWAKE_DRIVE_CACHE_DIR` holds file names and paths (no content) with `0600` permissions.
+- **Local files**: `upload_file` and `update_file_content` read `local_path` from `TWAKE_DRIVE_UPLOAD_DIR`, and `download_file` writes to `TWAKE_DRIVE_DOWNLOAD_DIR`; run the server with an account that can only reach the files it should. The search index in `TWAKE_DRIVE_CACHE_DIR` holds file names and paths (no content) with `0600` permissions.
 - **Prompt injection**: documents and notes may be written by third parties; treat their content as untrusted.
 
 General recommendations:
