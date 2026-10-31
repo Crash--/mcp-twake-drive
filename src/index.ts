@@ -3,7 +3,7 @@
  * mcp-twake-drive: MCP server (stdio) for Twake Drive (cozy-stack).
  *
  * Env: TWAKE_DRIVE_URL, TWAKE_DRIVE_TOKEN_COMMAND (or TWAKE_DRIVE_TOKEN),
- * optional TWAKE_DRIVE_APP_URL, TWAKE_DRIVE_DOWNLOAD_DIR, TWAKE_DRIVE_MAX_TEXT_CHARS.
+ * optional TWAKE_DRIVE_APP_URL, TWAKE_DRIVE_DOWNLOAD_DIR, TWAKE_DRIVE_UPLOAD_DIR, TWAKE_DRIVE_MAX_TEXT_CHARS.
  * Logs go to stderr only: stdout carries JSON-RPC.
  */
 import { VERSION } from './version.js';
