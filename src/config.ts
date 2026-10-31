@@ -16,7 +16,6 @@ export interface Config {
   /** Private cache of the metadata index used for search */
   cacheDir: string;
   maxTextChars: number;
-  timeoutMs: number;
 }
 
 /** `alice.twake.example.com` -> `alice-drive.twake.example.com` (Cozy app sub-domain convention). */
@@ -52,6 +51,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uploadDir: env.TWAKE_DRIVE_UPLOAD_DIR ? expandHome(env.TWAKE_DRIVE_UPLOAD_DIR) : downloadDir,
     cacheDir: expandHome(env.TWAKE_DRIVE_CACHE_DIR ?? join(env.XDG_CACHE_HOME ?? '~/.cache', 'mcp-twake-drive')),
     maxTextChars: Number(env.TWAKE_DRIVE_MAX_TEXT_CHARS ?? 60000),
-    timeoutMs: Number(env.TWAKE_DRIVE_TIMEOUT_MS ?? 60000),
   };
 }

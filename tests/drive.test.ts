@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { DriveClient, DriveError, escapeRegex, normalizePath } from '../src/drive.js';
+import { createCozyClient, escapeRegex, normalizePath } from '../src/drive.js';
 import { deriveAppUrl, loadConfig, type Config } from '../src/config.js';
 import { isTar, isTextLike, markdownFromTar, summarize, variantName, withExtension } from '../src/format.js';
 import { registerTools, linkSummary } from '../src/tools.js';
@@ -18,7 +18,6 @@ const config: Config = {
   downloadDir: '/tmp/twake-drive-test',
   uploadDir: '/tmp/twake-drive-test',
   maxTextChars: 1000,
-  timeoutMs: 5000,
 };
 
 type Handler = (url: URL, init: RequestInit) => Response | Promise<Response>;
@@ -29,8 +28,10 @@ function fakeFetch(handler: Handler) {
     calls.push({ method: init.method ?? 'GET', url, init });
     return handler(url, init);
   });
-  return { impl: impl as unknown as typeof fetch, calls };
+  vi.stubGlobal('fetch', impl);
+  return { calls };
 }
+afterEach(() => vi.unstubAllGlobals());
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/vnd.api+json' } });
 
@@ -56,55 +57,33 @@ describe('config', () => {
   });
 });
 
-describe('DriveClient', () => {
-  it('retries once with a fresh token after a 401', async () => {
-    const t = tokens();
-    const { impl, calls } = fakeFetch((_u, init) =>
-      (init.headers as any).authorization === 'Bearer tok1' ? json(401, {}) : json(200, { data: { id: 'x', attributes: {} } })
+describe('createCozyClient', () => {
+  const stale = (token: string, refused: () => Response) =>
+    fakeFetch((_u, init) =>
+      (init.headers as any).Authorization === `Bearer ${token}` ? refused() : json(200, { data: { id: 'x', attributes: {} } })
     );
-    const d = new DriveClient(config, t, impl);
-    await d.stat('x');
+
+  it.each([
+    ['an expired token', () => new Response('{}', { status: 401, headers: { 'content-type': 'application/json', 'www-authenticate': 'Bearer error="invalid_token" error_description="The access token expired"' } })],
+    ['an invalid token, which the stack answers with a 400', () => json(400, { error: 'Invalid JWT token' })],
+  ])('asks the token source again after %s', async (_name, refused) => {
+    const t = tokens();
+    const { calls } = stale('tok1', refused);
+    const client = createCozyClient(config.baseUrl, t);
+    await client.getStackClient().loadToken();
+    await client.collection('io.cozy.files').statById('x');
     expect(calls).toHaveLength(2);
     expect(t.invalidate).toHaveBeenCalledOnce();
+    expect((calls[1].init.headers as any).Authorization).toBe('Bearer tok2');
   });
 
-  it('routes shared-drive calls under /sharings/drives/:id', async () => {
-    const { impl, calls } = fakeFetch(() => json(200, { data: { id: 'f', attributes: {} } }));
-    const d = new DriveClient(config, tokens(), impl);
-    await d.stat('f', 'drv1');
-    await d.download('f', 'drv1').catch(() => {});
-    expect(calls[0].url.pathname).toBe('/sharings/drives/drv1/f');
-    expect(calls[1].url.pathname).toBe('/sharings/drives/drv1/download/f');
-  });
-
-  it('uploads with Type/Name query and the raw bytes', async () => {
-    const { impl, calls } = fakeFetch(() => json(201, { data: { id: 'n', attributes: { name: 'a.txt', type: 'file' } } }));
-    const d = new DriveClient(config, tokens(), impl);
-    await d.upload('dir1', 'a b.txt', new TextEncoder().encode('hi'), 'text/plain', undefined, ['x']);
-    expect(calls[0].method).toBe('POST');
-    expect(calls[0].url.pathname).toBe('/files/dir1');
-    expect(calls[0].url.searchParams.get('Type')).toBe('file');
-    expect(calls[0].url.searchParams.get('Name')).toBe('a b.txt');
-    expect(calls[0].url.searchParams.get('Tags')).toBe('x');
-    expect((calls[0].init.headers as any)['content-type']).toBe('text/plain');
-  });
-
-  it('turns stack errors into DriveError with a hint', async () => {
-    const { impl } = fakeFetch(() => json(409, { errors: [{ status: '409', detail: 'Conflict' }] }));
-    const d = new DriveClient(config, tokens(), impl);
-    const err = await d.mkdir('root', 'X').catch((e) => e);
-    expect(err).toBeInstanceOf(DriveError);
-    expect(err.status).toBe(409);
-    expect(err.message).toMatch(/Conflict/);
-    expect(err.hint).toMatch(/same name/);
-  });
-
-  it('resolves paths through /files/metadata', async () => {
-    const { impl, calls } = fakeFetch(() => json(200, { data: { id: 'd', attributes: { type: 'directory', path: '/Docs' } } }));
-    const d = new DriveClient(config, tokens(), impl);
-    expect(await d.resolveDirId({ path: 'Docs/' })).toBe('d');
-    expect(calls[0].url.pathname).toBe('/files/metadata');
-    expect(calls[0].url.searchParams.get('Path')).toBe('/Docs');
+  it('gives up when the new token is refused too', async () => {
+    const t = tokens();
+    const { calls } = fakeFetch(() => json(400, { error: 'Invalid JWT token' }));
+    const client = createCozyClient(config.baseUrl, t);
+    await client.getStackClient().loadToken();
+    await expect(client.collection('io.cozy.files').statById('x')).rejects.toMatchObject({ status: 400 });
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -175,10 +154,10 @@ describe('helpers', () => {
 
 describe('MCP tools (in-memory)', () => {
   async function connect(handler: Handler, driveConfig = config) {
-    const { impl, calls } = fakeFetch(handler);
+    const { calls } = fakeFetch(handler);
     const server = new McpServer({ name: 't', version: '0' });
-    const drive = new DriveClient(driveConfig, tokens(), impl);
-    registerTools(server, drive, new FileIndex(drive, `/tmp/twake-drive-test-${process.pid}-${Math.random()}.json`));
+    const cozy = createCozyClient(driveConfig.baseUrl, tokens());
+    registerTools(server, cozy, driveConfig, new FileIndex(cozy, driveConfig.baseUrl, `/tmp/twake-drive-test-${process.pid}-${Math.random()}.json`));
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
     await Promise.all([server.connect(a), client.connect(b)]);
@@ -220,8 +199,9 @@ describe('MCP tools (in-memory)', () => {
     expect(out.total).toBe(1);
     expect(out.items[0]).toMatchObject({ id: 'f1', path: '/Projets/Budget Réunion 2027.xlsx' });
     expect(calls[0].url.searchParams.get('since')).toBe('0');
-    const recent = JSON.parse((await call('list_recent_files', {})).text);
-    expect(recent.items.map((i: any) => i.id)).toEqual(['f1']); // f2 trashed, f3 has no date
+    expect(calls[0].url.searchParams.get('skip_deleted')).toBe('true');
+    expect(calls[0].url.searchParams.get('include_docs')).toBe('true');
+    await call('search_files', { query: 'budget' });
     expect(calls[1].url.searchParams.get('since')).toBe('5-x');
   });
 
@@ -417,39 +397,156 @@ describe('MCP tools (in-memory)', () => {
     });
   });
 
+  it('lists a folder with one paged request on its own route, by id and by path', async () => {
+    const { call, calls } = await connect((u) =>
+      json(200, {
+        data: { id: 'd', type: 'io.cozy.files', attributes: { type: 'directory', name: 'd', path: '/d' } },
+        included: [
+          { id: 'sub', type: 'io.cozy.files', attributes: { type: 'directory', name: 'sub', dir_id: 'd', path: '/d/sub' } },
+          { id: 'f1', type: 'io.cozy.files', attributes: { type: 'file', name: 'f1', dir_id: 'd' } },
+        ],
+        links: { next: `${u.pathname}?page[limit]=2&page[cursor]=c2` },
+      })
+    );
+    const byId = JSON.parse((await call('list_folder', { id: 'd', limit: 2, cursor: 'c1' })).text);
+    expect(byId).toMatchObject({ count: 2, next_cursor: 'c2' });
+    expect(byId.items.map((i: any) => [i.id, i.path])).toEqual([['sub', '/d/sub'], ['f1', '/d/f1']]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.pathname).toBe('/files/d');
+    expect(calls[0].url.searchParams.get('page[limit]')).toBe('2');
+    expect(calls[0].url.searchParams.get('page[cursor]')).toBe('c1');
+
+    await call('list_folder', { path: '/d', limit: 2 });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url.pathname).toBe('/files/metadata');
+    expect(calls[1].url.searchParams.get('Path')).toBe('/d');
+    expect(calls[1].url.searchParams.get('page[limit]')).toBe('2');
+  });
+
+  it('resolves an item with a single child at most', async () => {
+    const { call, calls } = await connect(() => json(200, { data: { id: 'd', type: 'io.cozy.files', attributes: { type: 'directory', name: 'd', path: '/d' } } }));
+    await call('get_item', { id: 'd' });
+    expect(calls.at(-1)!.url.searchParams.get('page[limit]')).toBe('1');
+    await call('get_item', { path: '/d' });
+    expect(calls.at(-1)!.url.searchParams.get('page[limit]')).toBe('1');
+  });
+
+  it('lists the trash through the stat route of its folder', async () => {
+    const { call, calls } = await connect(() =>
+      json(200, {
+        data: { id: 'io.cozy.files.trash-dir', attributes: { type: 'directory', name: '.cozy_trash', path: '/.cozy_trash' } },
+        included: [{ id: 'f', type: 'io.cozy.files', attributes: { type: 'file', name: 'x', restore_path: '/Docs' } }],
+        links: { next: '/files/io.cozy.files.trash-dir?page[cursor]=c2' },
+      })
+    );
+    const out = JSON.parse((await call('list_trash', { limit: 1 })).text);
+    expect(out).toMatchObject({ count: 1, next_cursor: 'c2', items: [{ id: 'f', restore_path: '/Docs' }] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.pathname).toBe('/files/io.cozy.files.trash-dir');
+  });
+
+  it('turns a stack error into a status, its detail and a hint', async () => {
+    const { call } = await connect(() => json(409, { errors: [{ status: '409', detail: 'Conflict' }] }));
+    const r = await call('create_folder', { name: 'X' });
+    expect(r.error).toBe(true);
+    expect(r.text).toContain('Error: HTTP 409 (Conflict)');
+    expect(r.text).toMatch(/How to fix: .*same name/);
+  });
+
+  it('uploads through FileCollection, in a shared drive too', async () => {
+    const { call, calls } = await connect(() => json(201, { data: { id: 'n', attributes: { name: 'a b.txt', type: 'file' } } }));
+    await call('upload_file', { name: 'a b.txt', content: 'hi', mime: 'text/plain', parent_id: 'dir1', drive_id: 'drv1' });
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(post.url.pathname).toBe('/sharings/drives/drv1/dir1');
+    expect(post.url.searchParams.get('Type')).toBe('file');
+    expect(post.url.searchParams.get('Name')).toBe('a b.txt');
+    expect((post.init.headers as any)['Content-Type']).toBe('text/plain');
+  });
+
+  it('resolves paths through the metadata route, in a shared drive too', async () => {
+    const { call, calls } = await connect(() => json(200, { data: { id: 'd', attributes: { type: 'directory', path: '/Docs' } } }));
+    await call('get_item', { path: 'Docs/', drive_id: 'drv1' });
+    expect(calls[0].url.pathname).toBe('/sharings/drives/drv1/metadata');
+    expect(calls[0].url.searchParams.get('Path')).toBe('/Docs');
+  });
+
+  it('keeps the spaces of a new name', async () => {
+    const { call, calls } = await connect((_u, init) =>
+      json(200, { data: { id: 'f', meta: { rev: '1-a' }, attributes: { type: 'file', name: init.method === 'PATCH' ? 'new' : 'old' } } })
+    );
+    await call('rename_item', { id: 'f', new_name: '  sp.txt ' });
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).data.attributes.name).toBe('  sp.txt ');
+  });
+
+  it('pages a shared drive folder through its stat route', async () => {
+    const { call, calls } = await connect((u) =>
+      json(200, {
+        data: { id: 'd', attributes: { type: 'directory', name: 'd', path: '/d' } },
+        included: [{ id: 'f1', type: 'io.cozy.files', attributes: { type: 'file', name: 'f1', dir_id: 'd' } }],
+        links: { next: `${u.pathname}?page[cursor]=c2` },
+      })
+    );
+    const out = JSON.parse((await call('list_folder', { id: 'd', drive_id: 'drv', limit: 5 })).text);
+    expect(out).toMatchObject({ count: 1, next_cursor: 'c2', items: [{ id: 'f1', shared_drive_id: 'drv' }] });
+    expect(calls.at(-1)!.url.pathname).toBe('/sharings/drives/drv/d');
+    expect(calls.at(-1)!.url.searchParams.get('page[limit]')).toBe('5');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('routes attribute changes to the shared drive when there is one', async () => {
+    const { call, calls } = await connect((_u, init) =>
+      json(200, { data: { id: 'f', meta: { rev: '1-a' }, attributes: { type: 'file', name: init.method === 'PATCH' ? 'new' : 'old' } } })
+    );
+    await call('rename_item', { id: 'f', new_name: 'new' });
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH' });
+    expect(calls.at(-1)!.url.pathname).toBe('/files/f');
+    await call('rename_item', { id: 'f', new_name: 'new', drive_id: 'drv' });
+    expect(calls.at(-1)!.url.pathname).toBe('/sharings/drives/drv/f');
+  });
+
+  it('keeps old versions out of a folder listing and into get_item', async () => {
+    const { call } = await connect(() =>
+      json(200, {
+        data: { id: 'f', attributes: { type: 'file', name: 'x', dir_id: 'd', path: '/d/x' } },
+        included: [{ id: 'f/2-b', type: 'io.cozy.files.versions', attributes: { updated_at: '2026-01-01T00:00:00Z', size: '3' } }],
+      })
+    );
+    const out = JSON.parse((await call('get_item', { id: 'f' })).text);
+    expect(out.old_versions).toEqual([{ version_id: '2-b', updated_at: '2026-01-01T00:00:00Z', size: '3 B' }]);
+  });
+
   it('upload renames on conflict when asked', async () => {
-    let n = 0;
     const { call, calls } = await connect((u, init) => {
-      if (init.method === 'POST' && u.pathname === '/files/io.cozy.files.root-dir') {
-        n++;
-        return n === 1
-          ? json(409, { errors: [{ detail: 'Conflict' }] })
-          : json(201, { data: { id: 'new', attributes: { type: 'file', name: u.searchParams.get('Name') } } });
+      if (init.method === 'POST') return json(201, { data: { id: 'new', attributes: { type: 'file', name: u.searchParams.get('Name') } } });
+      if (u.pathname === '/files/metadata') {
+        return u.searchParams.get('Path') === '/note.txt'
+          ? json(200, { data: { id: 'old', attributes: { type: 'file', name: 'note.txt' } } })
+          : json(404, { errors: [{ status: '404', title: 'Not Found' }] });
       }
-      return json(404, {});
+      return json(200, { data: { id: 'io.cozy.files.root-dir', attributes: { type: 'directory', path: '/' } } });
     });
     const r = await call('upload_file', { name: 'note.txt', content: 'hello', on_conflict: 'rename' });
     expect(r.error).toBe(false);
-    expect(JSON.parse(r.text)).toMatchObject({ action: 'created (renamed)', name: 'note (2).txt' });
-    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2);
+    expect(JSON.parse(r.text)).toMatchObject({ action: 'created (renamed)', name: 'note (1).txt' });
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
   it('refuses to destroy an item that is not in the trash', async () => {
     const { call, calls } = await connect(() => json(200, { data: { id: 'f', attributes: { type: 'file', name: 'x', trashed: false } } }));
     const r = await call('delete_permanently', { id: 'f' });
     expect(r.error).toBe(true);
-    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
   it('destroys a folder that sits in the trash (folders carry no trashed flag)', async () => {
-    const { call, calls } = await connect((_u, init) =>
-      init.method === 'DELETE'
-        ? new Response(null, { status: 204 })
-        : json(200, { data: { id: 'd', attributes: { type: 'directory', name: 'x', dir_id: 'io.cozy.files.trash-dir', path: '/.cozy_trash/x' } } })
+    const { call, calls } = await connect(() =>
+      json(200, { data: { id: 'd', attributes: { type: 'directory', name: 'x', dir_id: 'io.cozy.files.trash-dir', path: '/.cozy_trash/x' } } })
     );
     const r = await call('delete_permanently', { id: 'd' });
     expect(r.error).toBe(false);
-    expect(calls.find((c) => c.method === 'DELETE')?.url.pathname).toBe('/files/trash/d');
+    const patch = calls.find((c) => c.method === 'PATCH')!;
+    expect(patch.url.pathname).toBe('/files/d');
+    expect(JSON.parse(String(patch.init.body)).data.attributes.permanent_delete).toBe(true);
   });
 
   it('reports errors with a "How to fix" line', async () => {

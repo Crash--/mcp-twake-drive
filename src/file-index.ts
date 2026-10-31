@@ -6,11 +6,10 @@
  * web and mobile apps search a locally replicated copy. We do the same with
  * the light `/files/_changes` feed (names, folders, types, sizes, dates only),
  * persisted to a private cache file and refreshed incrementally from the last
- * sequence before every query.
+ * sequence before every search.
  */
 import { mkdir, readFile, rename, writeFile, chmod } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { DriveClient } from './drive.js';
 
 export interface Entry {
   n: string; // name
@@ -44,7 +43,7 @@ export interface Hit {
   updated_at?: string;
 }
 
-const FIELDS = 'type,name,dir_id,path,trashed,mime,class,size,updated_at';
+const FIELDS = ['type', 'name', 'dir_id', 'path', 'trashed', 'mime', 'class', 'size', 'updated_at'];
 const BATCH = 10000;
 
 export function fold(text: string): string {
@@ -62,7 +61,8 @@ export class FileIndex {
   lastSync?: Date;
 
   constructor(
-    private readonly drive: DriveClient,
+    private readonly client: any,
+    private readonly baseUrl: string,
     private readonly cacheFile: string
   ) {}
 
@@ -75,7 +75,7 @@ export class FileIndex {
     this.loaded = true;
     try {
       const snap = JSON.parse(await readFile(this.cacheFile, 'utf8')) as Snapshot;
-      if (snap.version === 1 && snap.base === this.drive.config.baseUrl) {
+      if (snap.version === 1 && snap.base === this.baseUrl) {
         this.entries = new Map(Object.entries(snap.entries));
         this.seq = snap.seq;
       }
@@ -87,7 +87,7 @@ export class FileIndex {
   private async save(): Promise<void> {
     const snap: Snapshot = {
       version: 1,
-      base: this.drive.config.baseUrl,
+      base: this.baseUrl,
       seq: this.seq,
       synced_at: new Date().toISOString(),
       entries: Object.fromEntries(this.entries),
@@ -113,20 +113,10 @@ export class FileIndex {
     await this.load();
     for (;;) {
       const initial = this.seq === '0';
-      const res = await this.drive.json<{
-        last_seq: string;
-        pending?: number;
-        results: Array<{ id: string; deleted?: boolean; doc?: Record<string, any> }>;
-      }>('GET', '/files/_changes', {
-        query: {
-          since: this.seq,
-          include_docs: true,
-          fields: FIELDS,
-          limit: BATCH,
-          skip_deleted: initial ? true : undefined,
-        },
-        accept: 'application/json',
-      });
+      // Q() has no query on the changes feed.
+      const res: { newLastSeq: string; pending?: number; results: Array<{ id: string; deleted?: boolean; doc?: Record<string, any> }> } = await this.client
+        .collection('io.cozy.files')
+        .fetchChanges({ since: this.seq }, { includeDocs: true, fields: FIELDS, limit: BATCH, skipDeleted: initial ? true : undefined });
       for (const r of res.results) {
         if (r.deleted || !r.doc) {
           this.entries.delete(r.id);
@@ -143,7 +133,7 @@ export class FileIndex {
         if (d.trashed) e.x = 1;
         this.entries.set(r.id, e);
       }
-      this.seq = res.last_seq;
+      this.seq = res.newLastSeq;
       if (res.results.length > 0) await this.save();
       if (!res.pending || res.results.length === 0) break;
     }
