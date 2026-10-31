@@ -11,6 +11,8 @@ export interface Config {
   /** Static token (development only) */
   token?: string;
   downloadDir: string;
+  /** The only folder local_path may read from */
+  uploadDir: string;
   /** Private cache of the metadata index used for search */
   cacheDir: string;
   maxTextChars: number;
@@ -42,12 +44,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!env.TWAKE_DRIVE_TOKEN_COMMAND && !env.TWAKE_DRIVE_TOKEN) {
     throw new Error('Set TWAKE_DRIVE_TOKEN_COMMAND (recommended) or TWAKE_DRIVE_TOKEN');
   }
+  const downloadDir = expandHome(env.TWAKE_DRIVE_DOWNLOAD_DIR ?? '~/Downloads/twake-drive');
   return {
     baseUrl,
     appUrl: (env.TWAKE_DRIVE_APP_URL ?? deriveAppUrl(baseUrl)).replace(/\/+$/, ''),
     tokenCommand: env.TWAKE_DRIVE_TOKEN_COMMAND,
     token: env.TWAKE_DRIVE_TOKEN,
-    downloadDir: expandHome(env.TWAKE_DRIVE_DOWNLOAD_DIR ?? '~/Downloads/twake-drive'),
+    downloadDir,
+    uploadDir: env.TWAKE_DRIVE_UPLOAD_DIR ? expandHome(env.TWAKE_DRIVE_UPLOAD_DIR) : downloadDir,
     cacheDir: expandHome(env.TWAKE_DRIVE_CACHE_DIR ?? join(env.XDG_CACHE_HOME ?? '~/.cache', 'mcp-twake-drive')),
     maxTextChars: Number(env.TWAKE_DRIVE_MAX_TEXT_CHARS ?? 60000),
     timeoutMs: Number(env.TWAKE_DRIVE_TIMEOUT_MS ?? 60000),
