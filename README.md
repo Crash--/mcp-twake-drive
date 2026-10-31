@@ -91,7 +91,6 @@ npm run build          # then run: node build/index.js
 | `TWAKE_DRIVE_URL` | yes | Your Twake Drive (cozy-stack) instance, e.g. `https://alice.twake.example.com` |
 | `TWAKE_DRIVE_TOKEN_COMMAND` | yes\* | Command printing an OAuth access token, raw or as JSON `{"access_token": "...", "expires_at": <epoch s>}`. Called again shortly before expiry. |
 | `TWAKE_DRIVE_TOKEN` | yes\* | Static token (development only) |
-| `TWAKE_DRIVE_APP_URL` | no | Drive web app used for the `url` links, default `<instance>-drive.<domain>` |
 | `TWAKE_DRIVE_DOWNLOAD_DIR` | no | Where `download_file` writes, default `~/Downloads/twake-drive` |
 | `TWAKE_DRIVE_UPLOAD_DIR` | no | Where `upload_file` and `update_file_content` read `local_path`, default `TWAKE_DRIVE_DOWNLOAD_DIR` |
 | `TWAKE_DRIVE_CACHE_DIR` | no | Search index location, default `~/.cache/mcp-twake-drive` |

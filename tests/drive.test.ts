@@ -6,15 +6,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createCozyClient } from '../src/drive.js';
-import { deriveAppUrl, loadConfig, type Config } from '../src/config.js';
-import { isTar, isTextLike, markdownFromTar, summarize, variantName, withExtension } from '../src/format.js';
+import { loadConfig, type Config } from '../src/config.js';
+import { isTar, isTextLike, markdownFromTar, summarize, withExtension } from '../src/format.js';
 import { registerTools, linkSummary } from '../src/tools.js';
 import { FileIndex, fold } from '../src/file-index.js';
 
 const config: Config = {
   baseUrl: 'https://alice.twake.example.com',
   cacheDir: '/tmp/twake-drive-test-cache',
-  appUrl: 'https://alice-drive.twake.example.com',
   downloadDir: '/tmp/twake-drive-test',
   uploadDir: '/tmp/twake-drive-test',
   maxTextChars: 1000,
@@ -41,10 +40,6 @@ const tokens = () => {
 };
 
 describe('config', () => {
-  it('derives the drive app URL from the instance', () => {
-    expect(deriveAppUrl('https://alice.twake.example.com')).toBe('https://alice-drive.twake.example.com');
-    expect(deriveAppUrl('https://a.b.c', 'notes')).toBe('https://a-notes.b.c');
-  });
   it('reads uploads from the download folder unless told otherwise', () => {
     const env = { TWAKE_DRIVE_URL: 'https://x.example.com', TWAKE_DRIVE_TOKEN: 't', TWAKE_DRIVE_DOWNLOAD_DIR: '/d' };
     expect(loadConfig(env).uploadDir).toBe('/d');
@@ -91,16 +86,15 @@ describe('helpers', () => {
   it('folds accents and case', () => {
     expect(fold('Réunion ÉTÉ')).toBe('reunion ete');
   });
-  it('names variants and extensions', () => {
-    expect(variantName('rapport.pdf', 2)).toBe('rapport (2).pdf');
-    expect(variantName('README', 3)).toBe('README (3)');
+  it('adds a missing extension', () => {
     expect(withExtension('Budget', 'xlsx')).toBe('Budget.xlsx');
     expect(withExtension('Budget.XLSX', 'xlsx')).toBe('Budget.XLSX');
   });
   it('detects text files', () => {
-    expect(isTextLike('text/vnd.cozy.note+markdown', 'n.cozy-note')).toBe(true);
-    expect(isTextLike('application/octet-stream', 'x.md')).toBe(true);
-    expect(isTextLike('application/pdf', 'x.pdf')).toBe(false);
+    expect(isTextLike('text/vnd.cozy.note+markdown')).toBe(true);
+    expect(isTextLike('application/json; charset=utf-8')).toBe(true);
+    expect(isTextLike('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe(false);
+    expect(isTextLike('application/pdf')).toBe(false);
   });
   it('gives up on a tar entry with an invalid size', () => {
     const tarWithSize = (size: string, entry = 'image.png') => {
@@ -132,7 +126,7 @@ describe('helpers', () => {
   it('summarises files with path and web link', () => {
     const s = summarize(
       { id: 'f1', attributes: { type: 'file', name: 'a.pdf', dir_id: 'd1', size: '2048', cozyMetadata: { favorite: true } } },
-      config.appUrl,
+      config.baseUrl,
       { dirPath: '/Docs' }
     );
     expect(s).toMatchObject({ path: '/Docs/a.pdf', size: 2048, favorite: true });
@@ -141,9 +135,9 @@ describe('helpers', () => {
   it('builds public link URLs from shortcodes', () => {
     const l = linkSummary(
       { id: 'p1', attributes: { shortcodes: { email: 'ABC' }, permissions: { files: { verbs: ['GET'], values: ['f1'] } } } },
-      config.appUrl
+      config.baseUrl
     );
-    expect(l).toMatchObject({ url: 'https://alice-drive.twake.example.com/public?sharecode=ABC', rights: 'read-only', file_ids: ['f1'] });
+    expect(l).toMatchObject({ url: 'https://alice-drive.twake.example.com/public?sharecode=ABC#/', rights: 'read-only', file_ids: ['f1'] });
   });
 });
 
@@ -328,7 +322,7 @@ describe('MCP tools (in-memory)', () => {
       const first = JSON.parse((await call('download_file', { id: 'f' })).text);
       const second = JSON.parse((await call('download_file', { id: 'f' })).text);
       expect(first.local_path).toBe(join(downloadDir, 'a.txt'));
-      expect(second.local_path).toBe(join(downloadDir, 'a (2).txt'));
+      expect(second.local_path).toBe(join(downloadDir, 'a (1).txt'));
       const nested = join(downloadDir, 'sub', 'b.txt');
       expect(JSON.parse((await call('download_file', { id: 'f', save_to: nested })).text).local_path).toBe(nested);
       expect(readFileSync(nested, 'utf8')).toBe('remote');
@@ -538,7 +532,47 @@ describe('MCP tools (in-memory)', () => {
       })
     );
     const out = JSON.parse((await call('get_item', { id: 'f' })).text);
-    expect(out.old_versions).toEqual([{ version_id: '2-b', updated_at: '2026-01-01T00:00:00Z', size: '3 B' }]);
+    expect(out.old_versions).toEqual([{ version_id: '2-b', updated_at: '2026-01-01T00:00:00Z', size: '3 Bytes' }]);
+  });
+
+  it('sends the type it is given, even when the name cannot tell it', async () => {
+    const { call, calls } = await connect((_u, init) => json(init.method === 'POST' ? 201 : 200, { data: { id: 'n', attributes: { name: 'LIRE', type: 'file', mime: 'text/plain' } } }));
+    await call('upload_file', { name: 'x.dat', content: 'hi', mime: 'image/png' });
+    expect((calls.find((c) => c.method === 'POST')!.init.headers as any)['Content-Type']).toBe('image/png');
+    await call('update_file_content', { id: 'n', content: 'hi' });
+    expect((calls.find((c) => c.method === 'PUT')!.init.headers as any)['Content-Type']).toBe('text/plain');
+  });
+
+  it('reports a refused download with its status and hint', async () => {
+    const { call } = await connect((u) =>
+      u.pathname.startsWith('/files/download/')
+        ? json(403, { errors: [{ status: '403', detail: 'file is infected' }] })
+        : json(200, { data: { id: 'f', attributes: { type: 'file', name: 'a.txt', mime: 'text/plain' } } })
+    );
+    for (const tool of ['read_file', 'download_file']) {
+      const r = await call(tool, { id: 'f' });
+      expect(r.error).toBe(true);
+      expect(r.text).toContain('Error: HTTP 403 (file is infected)');
+      expect(r.text).toMatch(/How to fix: Not allowed/);
+    }
+  });
+
+  it('gives the token hint on the 400 of a refused token', async () => {
+    const { call } = await connect(() => json(400, { error: 'Invalid JWT token' }));
+    const r = await call('get_item', { id: 'f' });
+    expect(r.text).toContain('HTTP 400 (Invalid JWT token)');
+    expect(r.text).toMatch(/How to fix: The Twake Drive token was refused/);
+  });
+
+  it('trims a name before looking for a conflict', async () => {
+    const { call, calls } = await connect((u, init) => {
+      if (init.method === 'POST') return json(201, { data: { id: 'new', attributes: { type: 'file', name: u.searchParams.get('Name') } } });
+      if (u.pathname === '/files/metadata') return json(404, { errors: [{ status: '404', title: 'Not Found' }] });
+      return json(200, { data: { id: 'io.cozy.files.root-dir', attributes: { type: 'directory', path: '/' } } });
+    });
+    const r = JSON.parse((await call('upload_file', { name: ' up.txt ', content: 'x', on_conflict: 'rename' })).text);
+    expect(r).toMatchObject({ action: 'created', name: 'up.txt' });
+    expect(calls.find((c) => c.url.pathname === '/files/metadata')!.url.searchParams.get('Path')).toBe('/up.txt');
   });
 
   it('upload renames on conflict when asked', async () => {

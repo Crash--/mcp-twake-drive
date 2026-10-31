@@ -4,8 +4,6 @@ import { join } from 'node:path';
 export interface Config {
   /** Cozy instance, e.g. https://alice.twake.example.com */
   baseUrl: string;
-  /** Web app URL used to build "open in Twake Drive" links, e.g. https://alice-drive.twake.example.com */
-  appUrl: string;
   /** Shell command printing an access token (raw or JSON {access_token, expires_at}) */
   tokenCommand?: string;
   /** Static token (development only) */
@@ -16,14 +14,6 @@ export interface Config {
   /** Private cache of the metadata index used for search */
   cacheDir: string;
   maxTextChars: number;
-}
-
-/** `alice.twake.example.com` -> `alice-drive.twake.example.com` (Cozy app sub-domain convention). */
-export function deriveAppUrl(baseUrl: string, slug = 'drive'): string {
-  const url = new URL(baseUrl);
-  const [instance, ...rest] = url.host.split('.');
-  if (!instance || rest.length === 0) return url.origin;
-  return `${url.protocol}//${instance}-${slug}.${rest.join('.')}`;
 }
 
 function expandHome(p: string): string {
@@ -44,7 +34,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const downloadDir = expandHome(env.TWAKE_DRIVE_DOWNLOAD_DIR ?? '~/Downloads/twake-drive');
   return {
     baseUrl,
-    appUrl: (env.TWAKE_DRIVE_APP_URL ?? deriveAppUrl(baseUrl)).replace(/\/+$/, ''),
     tokenCommand: env.TWAKE_DRIVE_TOKEN_COMMAND,
     token: env.TWAKE_DRIVE_TOKEN,
     downloadDir,

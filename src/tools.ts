@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { models } from 'cozy-client';
 import type { Config } from './config.js';
-import { NOTE_SCHEMA, ROOT_DIR_ID, type CozyDoc } from './drive.js';
+import { ROOT_DIR_ID, type CozyDoc } from './drive.js';
 import {
   FILES_DOCTYPE,
   TRASH_DIR_ID,
@@ -15,16 +15,7 @@ import {
   buildRecentFilesInFolderQuery,
   buildRecentFilesQuery,
 } from './queries.js';
-import {
-  guessMime,
-  humanSize,
-  isTar,
-  isTextLike,
-  markdownFromTar,
-  summarize,
-  variantName,
-  withExtension,
-} from './format.js';
+import { isTar, isTextLike, markdownFromTar, summarize, webLink, withExtension } from './format.js';
 import type { FileIndex, Hit } from './file-index.js';
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
@@ -72,7 +63,9 @@ function stackDetail(reason: any): string {
 function errorLines(e: any): string[] {
   if (e.status === undefined) return [e instanceof TypeError ? `Error: Twake Drive did not answer: ${e.message}` : `Error: ${e.message}`];
   const detail = stackDetail(e.reason);
-  return [`Error: HTTP ${e.status}${detail ? ` (${detail})` : ''}`, ...(HINTS[e.status] ? [`How to fix: ${HINTS[e.status]}`] : [])];
+  // The stack refuses a token with a 400.
+  const hint = /token/i.test(detail) ? HINTS[401] : HINTS[e.status];
+  return [`Error: HTTP ${e.status}${detail ? ` (${detail})` : ''}`, ...(hint ? [`How to fix: ${hint}`] : [])];
 }
 
 function requireRef(ref: Ref, what = 'item'): void {
@@ -103,7 +96,6 @@ async function assertInside(root: string, target: string, variable: string): Pro
 }
 
 export function registerTools(server: McpServer, client: any, config: Config, index: FileIndex): void {
-  const app = config.appUrl;
   const stack = client.getStackClient();
 
   const wrap = <A>(fn: (args: A) => Promise<unknown>) => async (args: A) => {
@@ -138,18 +130,20 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     return doc.data.id;
   };
 
-  const sum = (doc: CozyDoc, extra: { dirPath?: string; driveId?: string } = {}) => summarize(doc, app, extra);
+  const sum = (doc: CozyDoc, extra: { dirPath?: string; driveId?: string } = {}) => summarize(doc, config.baseUrl, extra);
 
   /** Upload with a name-conflict policy. */
   const uploadWithPolicy = async (
     dirId: string,
     name: string,
     bytes: Uint8Array,
-    mime: string,
+    mime: string | undefined,
     onConflict: 'error' | 'rename' | 'overwrite',
     driveId?: string
   ): Promise<{ doc: CozyDoc; action: string }> => {
-    const file = { name, dirId, driveId, options: { contentType: mime } };
+    // Trimmed as FileCollection does on creation: the conflict check would otherwise look for another name.
+    name = name.trim();
+    const file = { name, dirId, driveId, contentType: mime };
     if (onConflict === 'error') return { doc: (await client.collection(FILES_DOCTYPE, { driveId }).createFile(bytes, file)).data, action: 'created' };
     const conflictStrategy = onConflict === 'overwrite' ? 'erase' : 'rename';
     const { data: doc } = await (models.file as any).uploadFileWithConflictStrategy(client, bytes, { ...file, conflictStrategy });
@@ -172,15 +166,16 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const usage: Record<string, any> = (await client.query(diskUsage.definition, diskUsage.options)).data.attributes;
       const used = Number(usage.used ?? 0);
       const quota = usage.quota !== undefined ? Number(usage.quota) : undefined;
+      const size = (value?: unknown) => (value === undefined ? undefined : client.collection(FILES_DOCTYPE).getBeautifulSize({ size: value }, 1));
       return {
         instance: config.baseUrl,
-        web_app: app,
-        used: humanSize(used),
-        quota: humanSize(quota),
+        web_app: webLink(config.baseUrl, { hash: '' }),
+        used: size(used),
+        quota: size(quota),
         used_percent: quota ? Math.round((used / quota) * 1000) / 10 : undefined,
         files_count: usage.files_count,
-        versions_size: humanSize(usage.versions !== undefined ? Number(usage.versions) : undefined),
-        trash_size: humanSize(usage.trash !== undefined ? Number(usage.trash) : undefined),
+        versions_size: size(usage.versions),
+        trash_size: size(usage.trash),
       };
     })
   );
@@ -233,10 +228,10 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       }
       const versions = ((res.included ?? []) as CozyDoc[])
         .filter((d) => d.type === 'io.cozy.files.versions')
-        .map((v) => ({ version_id: v.id.split('/').pop(), updated_at: v.attributes.updated_at, size: humanSize(Number(v.attributes.size)) }));
+        .map((v) => ({ version_id: v.id.split('/').pop(), updated_at: v.attributes.updated_at, size: client.collection(FILES_DOCTYPE).getBeautifulSize(v.attributes, 1) }));
       return {
         ...sum(doc, { dirPath, driveId: a.drive_id }),
-        size_human: humanSize(doc.attributes.size !== undefined ? Number(doc.attributes.size) : undefined),
+        size_human: doc.attributes.size !== undefined ? client.collection(FILES_DOCTYPE).getBeautifulSize(doc.attributes, 1) : undefined,
         rev: doc.meta?.rev,
         created_by_app: doc.attributes.cozyMetadata?.createdByApp,
         old_versions: versions.length ? versions : undefined,
@@ -348,10 +343,11 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const meta = (await resolve(a, a.drive_id)).data;
       if (meta.attributes.type === 'directory') throw new Error('This is a folder: use list_folder');
       const name: string = meta.attributes.name;
-      if (!isTextLike(meta.attributes.mime, name)) {
+      if (!isTextLike(meta.attributes.mime) && !isTextLike(client.collection(FILES_DOCTYPE).getFileTypeFromName(name)) && !/\.(cozy-note|excalidraw)$/i.test(name)) {
         throw new Error(`${name} (${meta.attributes.mime}) is not a text file: use download_file`);
       }
-      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id);
+      // fetchFileContentById goes through fetch, which only throws on an error status when asked to.
+      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id, { throwFetchErrors: true });
       const bytes = new Uint8Array(await res.arrayBuffer());
       const markdown = isTar(bytes) ? markdownFromTar(bytes) : new TextDecoder().decode(bytes);
       if (markdown === undefined) throw new Error(`${name} is a damaged note: its archive has no readable index.md`);
@@ -390,17 +386,21 @@ export function registerTools(server: McpServer, client: any, config: Config, in
         const isDir = existsSync(a.save_to) && (await fsStat(a.save_to)).isDirectory();
         target = isDir ? join(a.save_to, name) : a.save_to;
       } else {
-        target = join(config.downloadDir, name);
-        for (let n = 2; existsSync(target); n++) target = join(config.downloadDir, variantName(name, n));
+        let free = name;
+        while (existsSync(join(config.downloadDir, free))) {
+          const { filename, extension } = (models.file as any).splitFilename({ name: free, type: 'file' });
+          free = (models.file as any).generateNewFileNameOnConflict(filename) + extension;
+        }
+        target = join(config.downloadDir, free);
       }
       await assertInside(config.downloadDir, target, 'TWAKE_DRIVE_DOWNLOAD_DIR');
       await mkdir(dirname(target), { recursive: true });
-      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id);
+      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id, { throwFetchErrors: true });
       const bytes = new Uint8Array(await res.arrayBuffer());
       await writeFile(target, bytes, { flag: 'wx' }).catch((e: NodeJS.ErrnoException) => {
         throw e.code === 'EEXIST' ? new Error(`${target} already exists`) : e;
       });
-      return { id: meta.id, name, local_path: resolvePath(target), size: humanSize(bytes.length), mime: meta.attributes.mime };
+      return { id: meta.id, name, local_path: resolvePath(target), size: client.collection(FILES_DOCTYPE).getBeautifulSize({ size: bytes.length }, 1), mime: meta.attributes.mime };
     })
   );
 
@@ -456,7 +456,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async () => {
       const links: CozyDoc[] = (await client.collection('io.cozy.permissions').fetchAllLinks({ _type: FILES_DOCTYPE })).data;
-      return links.map((p) => linkSummary(p, app));
+      return links.map((p) => linkSummary(p, config.baseUrl));
     })
   );
 
@@ -477,35 +477,28 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: { name?: string; path?: string; parents: boolean; parent_id?: string; parent_path?: string; drive_id?: string }) => {
       if (a.path) {
-        const parts = posix.resolve('/', a.path.trim()).split('/').filter(Boolean);
-        if (!parts.length) throw new Error('path must not be the root');
-        let parentId = ROOT_DIR_ID;
-        let current = '';
-        let last: CozyDoc | undefined;
-        for (const [i, part] of parts.entries()) {
-          current += `/${part}`;
-          try {
-            last = (await statByPath(current, a.drive_id)).data as CozyDoc;
-            if (i === parts.length - 1) return { already_existed: true, ...sum(last) };
-          } catch (e) {
-            if ((e as { status?: number }).status !== 404) throw e;
-            if (i < parts.length - 1 && !a.parents) throw new Error(`${current} does not exist (use parents=true)`);
-            last = (await client.save({ _type: FILES_DOCTYPE, type: 'directory', name: part, dirId: parentId }, { driveId: a.drive_id })).data as CozyDoc;
-          }
-          parentId = last.id;
+        const path = posix.resolve('/', a.path.trim());
+        if (path === '/') throw new Error('path must not be the root');
+        const missing = (e: { status?: number }) => {
+          if (e.status !== 404) throw e;
+        };
+        const existing = await statByPath(path, a.drive_id).catch(missing);
+        if (existing) return { already_existed: true, ...sum(existing.data) };
+        if (!a.parents && posix.dirname(path) !== '/' && !(await statByPath(posix.dirname(path), a.drive_id).catch(missing))) {
+          throw new Error(`${posix.dirname(path)} does not exist (use parents=true)`);
         }
-        return { created: true, ...sum(last!) };
+        return { created: true, ...sum((await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).createDirectoryByPath(path)).data) };
       }
       if (!a.name) throw new Error('Give either path, or name with parent_id/parent_path');
       const parentId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
-      return { created: true, ...sum((await client.save({ _type: FILES_DOCTYPE, type: 'directory', name: a.name, dirId: parentId }, { driveId: a.drive_id })).data) };
+      return { created: true, ...sum((await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).create({ type: 'directory', name: a.name, dirId: parentId })).data) };
     })
   );
 
   const conflict = z
     .enum(['error', 'rename', 'overwrite'])
     .default('error')
-    .describe('If a file with this name exists: error (default), rename ("name (2).ext") or overwrite (new version)');
+    .describe('If a file with this name exists: error (default), rename ("name (1).ext") or overwrite (new version)');
 
   server.registerTool(
     'upload_file',
@@ -529,8 +522,8 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       if (!name) throw new Error('name is required when uploading content');
       const bytes = await loadBytes(a, config.uploadDir);
       const dirId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
-      const { doc, action } = await uploadWithPolicy(dirId, name, bytes, a.mime ?? guessMime(name), a.on_conflict, a.drive_id);
-      return { action, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };
+      const { doc, action } = await uploadWithPolicy(dirId, name, bytes, a.mime, a.on_conflict, a.drive_id);
+      return { action, ...sum(doc, { driveId: a.drive_id }), size_human: client.collection(FILES_DOCTYPE).getBeautifulSize({ size: bytes.length }, 1) };
     })
   );
 
@@ -552,10 +545,9 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const meta = (await resolve(a, a.drive_id)).data;
       if (meta.attributes.type === 'directory') throw new Error('This is a folder');
       const bytes = await loadBytes(a, config.uploadDir);
-      const contentType = meta.attributes.mime ?? guessMime(meta.attributes.name);
-      const file = { fileId: meta.id, name: meta.attributes.name, options: { contentType } };
+      const file = { fileId: meta.id, name: meta.attributes.name, contentType: meta.attributes.mime };
       const { data: doc } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateFile(bytes, file, { ifMatch: meta.meta?.rev, sanitizeName: false });
-      return { updated: true, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };
+      return { updated: true, ...sum(doc, { driveId: a.drive_id }), size_human: client.collection(FILES_DOCTYPE).getBeautifulSize({ size: bytes.length }, 1) };
     })
   );
 
@@ -580,7 +572,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const name = withExtension(a.name, ext);
       const bytes = new Uint8Array(await readFile(join(TEMPLATES_DIR, tpl)));
       const dirId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
-      const { doc, action } = await uploadWithPolicy(dirId, name, bytes, guessMime(name), a.on_conflict, a.drive_id);
+      const { doc, action } = await uploadWithPolicy(dirId, name, bytes, undefined, a.on_conflict, a.drive_id);
       return { action, ...sum(doc, { driveId: a.drive_id }) };
     })
   );
@@ -604,8 +596,9 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const dirId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
       if (!a.markdown) {
         // NotesCollection.create() always sends an empty title.
-        const { data: doc } = await stack.fetchJSON('POST', `${client.collection('io.cozy.notes', { driveId: a.drive_id }).prefix}/notes`, {
-          data: { type: 'io.cozy.notes.documents', attributes: { title: a.title, dir_id: dirId, schema: NOTE_SCHEMA } },
+        const notes = client.collection('io.cozy.notes', { driveId: a.drive_id });
+        const { data: doc } = await stack.fetchJSON('POST', `${notes.prefix}/notes`, {
+          data: { type: 'io.cozy.notes.documents', attributes: { title: a.title, dir_id: dirId, schema: notes.getDefaultSchema() } },
         });
         return { action: 'created', ...sum(doc, { driveId: a.drive_id }) };
       }
@@ -680,7 +673,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { new_name: string }) => {
       requireRef(a);
       const meta = (await resolve(a, a.drive_id)).data;
-      // client.save() always targets /files, never a shared drive, and it trims names: same for the three tools below.
+      // An update through client.save() always targets /files, never a shared drive, and trims names: same for the three tools below.
       const { data: doc } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateAttributes(meta.id, { name: a.new_name }, { sanitizeName: false });
       return { renamed_from: meta.attributes.name, ...sum(doc) };
     })
@@ -836,7 +829,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
         ...(a.password ? { password: a.password } : {}),
         ...(expiresAt ? { expires_at: expiresAt } : {}),
       });
-      return { item: sum(meta), link: linkSummary(perm, app) };
+      return { item: sum(meta), link: linkSummary(perm, config.baseUrl) };
     })
   );
 
@@ -898,14 +891,14 @@ export function registerTools(server: McpServer, client: any, config: Config, in
   );
 }
 
-export function linkSummary(p: CozyDoc, appUrl: string) {
+export function linkSummary(p: CozyDoc, baseUrl: string) {
   const a = p.attributes ?? {};
   const code = a.shortcodes?.email ?? a.shortcodes?.code ?? a.codes?.email ?? a.codes?.code;
   const rules = Object.values(a.permissions ?? {}) as Array<{ verbs?: string[]; values?: string[] }>;
   const verbs = rules.flatMap((r) => r.verbs ?? []);
   return {
     link_id: p.id,
-    url: code ? `${appUrl}/public?sharecode=${encodeURIComponent(code)}` : undefined,
+    url: code ? webLink(baseUrl, { pathname: '/public', searchParams: [['sharecode', code]] }) : undefined,
     file_ids: rules.flatMap((r) => r.values ?? []),
     rights: verbs.some((v) => v !== 'GET') ? 'edit' : 'read-only',
     password: a.password ? true : undefined,
