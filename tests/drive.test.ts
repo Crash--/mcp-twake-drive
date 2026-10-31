@@ -142,10 +142,10 @@ describe('helpers', () => {
 });
 
 describe('MCP tools (in-memory)', () => {
-  async function connect(handler: Handler, driveConfig = config) {
+  async function connect(handler: Handler, driveConfig = config, source = tokens()) {
     const { calls } = fakeFetch(handler);
     const server = new McpServer({ name: 't', version: '0' });
-    const cozy = createCozyClient(driveConfig.baseUrl, tokens());
+    const cozy = createCozyClient(driveConfig.baseUrl, source);
     registerTools(server, cozy, driveConfig, new FileIndex(cozy, driveConfig.baseUrl, `/tmp/twake-drive-test-${process.pid}-${Math.random()}.json`));
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'c', version: '0' });
@@ -562,6 +562,32 @@ describe('MCP tools (in-memory)', () => {
     const r = await call('get_item', { id: 'f' });
     expect(r.text).toContain('HTTP 400 (Invalid JWT token)');
     expect(r.text).toMatch(/How to fix: The Twake Drive token was refused/);
+  });
+
+  it('keeps the message of a token command that fails on renewal', async () => {
+    const source = tokens();
+    source.getToken.mockResolvedValueOnce('old').mockRejectedValueOnce(new Error('token command failed: broker down'));
+    const { call } = await connect(() => json(400, { error: 'Invalid JWT token' }), config, source);
+    const r = await call('get_item', { id: 'f' });
+    expect(r.error).toBe(true);
+    expect(r.text).toContain('HTTP 400 (Invalid JWT token)');
+    expect(r.text).toContain('token command failed: broker down');
+  });
+
+  it('revokes only the links of the item', async () => {
+    const link = (id: string, fileId: string) => ({
+      type: 'io.cozy.permissions',
+      id,
+      attributes: { permissions: { files: { type: 'io.cozy.files', values: [fileId] } } },
+    });
+    const { call, calls } = await connect((u, init) => {
+      if (init.method === 'DELETE') return new Response(null, { status: 204 });
+      if (u.pathname.includes('shared-by-link')) return json(200, { data: [link('mine', 'f'), link('other', 'g')] });
+      return json(200, { data: { id: 'f', attributes: { type: 'file', name: 'a.txt' } } });
+    });
+    const r = await call('revoke_share_link', { id: 'f' });
+    expect(JSON.parse(r.text)).toEqual({ item: 'a.txt', revoked: true });
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url.pathname)).toEqual(['/permissions/mine']);
   });
 
   it('trims a name before looking for a conflict', async () => {

@@ -104,7 +104,9 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       await stack.loadToken();
       return text(await fn(args));
     } catch (e) {
-      return { ...text(errorLines(e).join('\n')), isError: true };
+      const lines = errorLines(e);
+      if (stack.refreshFailure) lines.push(stack.refreshFailure.message);
+      return { ...text(lines.join('\n')), isError: true };
     }
   };
 
@@ -844,13 +846,8 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref) => {
       requireRef(a);
       const meta = (await resolve(a, undefined)).data;
-      const permissions = client.collection('io.cozy.permissions');
-      const links: CozyDoc[] = (await permissions.fetchAllLinks({ _type: FILES_DOCTYPE })).data;
-      const matching = links.filter((p) =>
-        Object.values(p.attributes.permissions ?? {}).some((r: any) => (r.values ?? []).includes(meta.id))
-      );
-      for (const p of matching) await permissions.destroy(p);
-      return { item: meta.attributes.name, revoked_links: matching.length };
+      await client.collection('io.cozy.permissions').revokeSharingLink({ _id: meta.id, _type: FILES_DOCTYPE });
+      return { item: meta.attributes.name, revoked: true };
     })
   );
 
