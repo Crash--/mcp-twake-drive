@@ -1,46 +1,27 @@
 import { extname } from 'node:path';
 import type { CozyDoc } from './drive.js';
 
-export interface ItemSummary {
-  id: string;
-  name: string;
-  type: 'file' | 'directory';
-  path?: string;
-  dir_id?: string;
-  size?: number;
-  mime?: string;
-  class?: string;
-  created_at?: string;
-  updated_at?: string;
-  favorite?: boolean;
-  tags?: string[];
-  trashed?: boolean;
-  shared_drive_id?: string;
-  url?: string;
-}
-
-/** Compact, AI-friendly view of an io.cozy.files document. */
-export function summarize(doc: CozyDoc, appUrl: string, extra: { dirPath?: string; driveId?: string } = {}): ItemSummary {
+/** Compact, AI-friendly view of an io.cozy.files document. Undefined fields stay out of the JSON. */
+export function summarize(doc: CozyDoc, appUrl: string, extra: { dirPath?: string; driveId?: string } = {}) {
   const a = doc.attributes ?? {};
-  const type = a.type === 'directory' ? 'directory' : 'file';
-  const path =
-    a.path ?? (extra.dirPath ? `${extra.dirPath === '/' ? '' : extra.dirPath}/${a.name}` : undefined);
-  const out: ItemSummary = { id: doc.id, name: a.name, type };
-  if (path) out.path = path;
-  if (a.dir_id) out.dir_id = a.dir_id;
-  if (type === 'file') {
-    if (a.size !== undefined) out.size = Number(a.size);
-    if (a.mime) out.mime = a.mime;
-    if (a.class) out.class = a.class;
-  }
-  if (a.created_at) out.created_at = a.created_at;
-  if (a.updated_at) out.updated_at = a.updated_at;
-  if (a.cozyMetadata?.favorite) out.favorite = true;
-  if (Array.isArray(a.tags) && a.tags.length) out.tags = a.tags;
-  if (a.trashed) out.trashed = true;
-  if (extra.driveId) out.shared_drive_id = extra.driveId;
-  out.url = webUrl(doc, appUrl);
-  return out;
+  const isFile = a.type !== 'directory';
+  return {
+    id: doc.id,
+    name: a.name as string,
+    type: isFile ? 'file' : 'directory',
+    path: (a.path ?? (extra.dirPath ? `${extra.dirPath === '/' ? '' : extra.dirPath}/${a.name}` : undefined)) as string | undefined,
+    dir_id: a.dir_id || undefined,
+    size: isFile && a.size !== undefined ? Number(a.size) : undefined,
+    mime: (isFile && a.mime) || undefined,
+    class: (isFile && a.class) || undefined,
+    created_at: a.created_at || undefined,
+    updated_at: a.updated_at || undefined,
+    favorite: a.cozyMetadata?.favorite ? true : undefined,
+    tags: a.tags?.length ? a.tags : undefined,
+    trashed: a.trashed ? true : undefined,
+    shared_drive_id: extra.driveId,
+    url: webUrl(doc, appUrl),
+  };
 }
 
 export function webUrl(doc: CozyDoc, appUrl: string): string {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { createCozyClient, escapeRegex, normalizePath } from '../src/drive.js';
+import { createCozyClient } from '../src/drive.js';
 import { deriveAppUrl, loadConfig, type Config } from '../src/config.js';
 import { isTar, isTextLike, markdownFromTar, summarize, variantName, withExtension } from '../src/format.js';
 import { registerTools, linkSummary } from '../src/tools.js';
@@ -90,11 +90,6 @@ describe('createCozyClient', () => {
 describe('helpers', () => {
   it('folds accents and case', () => {
     expect(fold('Réunion ÉTÉ')).toBe('reunion ete');
-  });
-  it('escapes regex metacharacters and normalises paths', () => {
-    expect(escapeRegex('a.b (1)*')).toBe('a\\.b \\(1\\)\\*');
-    expect(normalizePath('//Docs//x/')).toBe('/Docs/x');
-    expect(normalizePath('/')).toBe('/');
   });
   it('names variants and extensions', () => {
     expect(variantName('rapport.pdf', 2)).toBe('rapport (2).pdf');
@@ -405,7 +400,7 @@ describe('MCP tools (in-memory)', () => {
       if (u.pathname === '/files/_find') {
         return json(200, {
           data: [{ id: 'f1', type: 'io.cozy.files', attributes: { type: 'file', name: 'a.txt', path: '/a.txt' } }],
-          meta: { count: 1 },
+          meta: { count: 2 },
           links: { next: '/files/_find?page[cursor]=bm1' },
         });
       }

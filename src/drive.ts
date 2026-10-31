@@ -27,21 +27,6 @@ export interface CozyDoc {
   links?: Record<string, string>;
 }
 
-export class DriveError extends Error {
-  constructor(
-    message: string,
-    readonly status?: number,
-    readonly hint?: string
-  ) {
-    super(message);
-    this.name = 'DriveError';
-  }
-}
-
-export function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** fetchJSON calls refreshToken() on an expired or invalid token, and retries once. */
 class TokenStackClient extends CozyStackClient {
   constructor(
@@ -66,11 +51,6 @@ class TokenStackClient extends CozyStackClient {
 export function createCozyClient(baseUrl: string, tokens: TokenSource) {
   // A long-lived process never reads the store, and it would keep every document ever listed. Writes still land in it.
   return new CozyClient({ stackClient: new TokenStackClient({ uri: baseUrl }, tokens), disableStoreForQueries: true });
-}
-
-export function normalizePath(path: string): string {
-  const p = ('/' + path.trim()).replace(/\/+/g, '/');
-  return p.length > 1 ? p.replace(/\/$/, '') : p;
 }
 
 /** Default ProseMirror schema of Cozy Notes (docs/notes.md), OrderedMaps as arrays. */

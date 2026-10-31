@@ -1,12 +1,12 @@
 import { mkdir, readFile, realpath, writeFile, stat as fsStat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { models } from 'cozy-client';
 import type { Config } from './config.js';
-import { DriveError, NOTE_SCHEMA, ROOT_DIR_ID, normalizePath, type CozyDoc } from './drive.js';
+import { NOTE_SCHEMA, ROOT_DIR_ID, type CozyDoc } from './drive.js';
 import {
   FILES_DOCTYPE,
   TRASH_DIR_ID,
@@ -70,31 +70,20 @@ function stackDetail(reason: any): string {
 }
 
 function errorLines(e: any): string[] {
-  if (e instanceof DriveError) return [`Error: ${e.message}`, ...(e.hint ? [`How to fix: ${e.hint}`] : [])];
   if (e.status === undefined) return [e instanceof TypeError ? `Error: Twake Drive did not answer: ${e.message}` : `Error: ${e.message}`];
   const detail = stackDetail(e.reason);
   return [`Error: HTTP ${e.status}${detail ? ` (${detail})` : ''}`, ...(HINTS[e.status] ? [`How to fix: ${HINTS[e.status]}`] : [])];
 }
 
-/** The next cursor, from the `links.next` of a paged stack route. */
-function nextCursor(res: { links?: { next?: string } }, baseUrl: string): string | undefined {
-  return res.links?.next ? new URL(res.links.next, baseUrl).searchParams.get('page[cursor]') ?? undefined : undefined;
-}
-
-/** A Q() page: the stack only gives a bookmark, a full page may have more. */
-function nextBookmark(res: { data: unknown[]; bookmark?: string }, limit: number): string | undefined {
-  return res.data.length === limit ? res.bookmark : undefined;
-}
-
 function requireRef(ref: Ref, what = 'item'): void {
-  if (!ref.id && !ref.path) throw new DriveError(`Give the ${what} id or path`, 400);
+  if (!ref.id && !ref.path) throw new Error(`Give the ${what} id or path`);
 }
 
 async function loadBytes(args: { local_path?: string; content?: string; content_base64?: string }, uploadDir: string): Promise<Uint8Array> {
   const given = [args.local_path, args.content, args.content_base64].filter((v) => v !== undefined).length;
-  if (given !== 1) throw new DriveError('Give exactly one of local_path, content or content_base64', 400);
+  if (given !== 1) throw new Error('Give exactly one of local_path, content or content_base64');
   if (args.local_path !== undefined) {
-    if (!isAbsolute(args.local_path)) throw new DriveError('local_path must be absolute', 400);
+    if (!isAbsolute(args.local_path)) throw new Error('local_path must be absolute');
     await assertInside(uploadDir, args.local_path, 'TWAKE_DRIVE_UPLOAD_DIR');
     return new Uint8Array(await readFile(args.local_path));
   }
@@ -109,14 +98,13 @@ async function assertInside(root: string, target: string, variable: string): Pro
   while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
   const rel = relative(await realpath(root), await realpath(existing));
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new DriveError(`Local path must stay inside ${root} (${variable})`, 400);
+    throw new Error(`Local path must stay inside ${root} (${variable})`);
   }
 }
 
 export function registerTools(server: McpServer, client: any, config: Config, index: FileIndex): void {
   const app = config.appUrl;
   const stack = client.getStackClient();
-  const files = (driveId?: string) => client.collection(FILES_DOCTYPE, driveId ? { driveId } : {});
 
   const wrap = <A>(fn: (args: A) => Promise<unknown>) => async (args: A) => {
     try {
@@ -128,47 +116,28 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     }
   };
 
-  // Q().getById() carries no page: a folder would bring 30 children, and listing would need a Mango index to build.
-  const stat = (id: string, driveId?: string, page: { limit: number; cursor?: string } = { limit: 1 }) =>
-    files(driveId).statById(id, { 'page[limit]': page.limit, 'page[cursor]': page.cursor });
-
   const statByPath = (path: string, driveId?: string, page: { limit: number; cursor?: string } = { limit: 1 }) => {
-    const query = new URLSearchParams({ Path: normalizePath(path), 'page[limit]': String(page.limit) });
+    const query = new URLSearchParams({ Path: posix.resolve('/', path.trim()), 'page[limit]': String(page.limit) });
     if (page.cursor) query.set('page[cursor]', page.cursor);
     // FileCollection.statByPath() carries no page.
-    return stack.fetchJSON('GET', `${files(driveId).prefix}/metadata?${query}`);
+    return stack.fetchJSON('GET', `${client.collection(FILES_DOCTYPE, { driveId }).prefix}/metadata?${query}`);
   };
 
   /** An item from an id or an absolute path (root when both are absent). */
-  const resolve = (ref: { id?: string; path?: string }, driveId?: string, page?: { limit: number; cursor?: string }) => {
-    if (ref.id) return stat(ref.id, driveId, page);
-    if (ref.path && ref.path !== '/') return statByPath(ref.path, driveId, page);
-    return stat(ROOT_DIR_ID, driveId, page);
+  const resolve = (ref: { id?: string; path?: string }, driveId?: string, page: { limit: number; cursor?: string } = { limit: 1 }) => {
+    if (ref.path && ref.path !== '/' && !ref.id) return statByPath(ref.path, driveId, page);
+    // Q().getById() carries no page: a folder would bring 30 children, and listing would need a Mango index to build.
+    return client.collection(FILES_DOCTYPE, { driveId }).statById(ref.id ?? ROOT_DIR_ID, { 'page[limit]': page.limit, 'page[cursor]': page.cursor });
   };
 
   const resolveDirId = async (ref: { id?: string; path?: string }, driveId?: string): Promise<string> => {
     if (ref.id) return ref.id;
     if (!ref.path || ref.path === '/') return ROOT_DIR_ID;
     const doc = await statByPath(ref.path, driveId);
-    if (doc.data.attributes.type !== 'directory') throw new DriveError(`${ref.path} is a file, not a folder`, 400);
+    if (doc.data.attributes.type !== 'directory') throw new Error(`${ref.path} is a file, not a folder`);
     return doc.data.id;
   };
 
-  const download = async (id: string, driveId?: string) =>
-    new Uint8Array(await (await files(driveId).fetchFileContentById(id)).arrayBuffer());
-
-  // client.save() always targets /files, never a shared drive, and it trims names.
-  const patch = async (id: string, attributes: Record<string, unknown>, driveId?: string): Promise<CozyDoc> =>
-    (await files(driveId).updateAttributes(id, attributes, { sanitizeName: false })).data;
-
-  const createDir = async (parentId: string, name: string, driveId?: string): Promise<CozyDoc> =>
-    (await client.save({ _type: FILES_DOCTYPE, type: 'directory', name, dirId: parentId }, driveId ? { driveId } : {})).data;
-
-  const hitSummary = (h: Hit) =>
-    summarize(
-      { id: h.id, attributes: { type: h.type, name: h.name, dir_id: h.dir_id, path: h.path, mime: h.mime, class: h.class, size: h.size, updated_at: h.updated_at } },
-      app
-    );
   const sum = (doc: CozyDoc, extra: { dirPath?: string; driveId?: string } = {}) => summarize(doc, app, extra);
 
   /** Upload with a name-conflict policy. */
@@ -181,7 +150,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     driveId?: string
   ): Promise<{ doc: CozyDoc; action: string }> => {
     const file = { name, dirId, driveId, options: { contentType: mime } };
-    if (onConflict === 'error') return { doc: (await files(driveId).createFile(bytes, file)).data, action: 'created' };
+    if (onConflict === 'error') return { doc: (await client.collection(FILES_DOCTYPE, { driveId }).createFile(bytes, file)).data, action: 'created' };
     const conflictStrategy = onConflict === 'overwrite' ? 'erase' : 'rename';
     const { data: doc } = await (models.file as any).uploadFileWithConflictStrategy(client, bytes, { ...file, conflictStrategy });
     if (onConflict === 'overwrite') return { doc, action: doc.meta?.rev?.startsWith('1-') ? 'created' : 'overwritten' };
@@ -232,7 +201,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { limit: number; cursor?: string }) => {
       const res = await resolve(a, a.drive_id, { limit: a.limit, cursor: a.cursor });
       const dir: CozyDoc = res.data;
-      if (dir.attributes.type !== 'directory') throw new DriveError(`${dir.attributes.name} is a file: use get_item`, 400);
+      if (dir.attributes.type !== 'directory') throw new Error(`${dir.attributes.name} is a file: use get_item`);
       const included: CozyDoc[] = res.included ?? [];
       const items = included
         .filter((d) => ['file', 'directory'].includes(d.attributes?.type) && d.id !== TRASH_DIR_ID)
@@ -241,7 +210,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
         folder: { id: dir.id, path: dir.attributes.path, name: dir.attributes.name, url: sum(dir).url },
         count: items.length,
         items,
-        next_cursor: nextCursor(res, config.baseUrl),
+        next_cursor: res.links?.next ? new URL(res.links.next, config.baseUrl).searchParams.get('page[cursor]') : undefined,
       };
     })
   );
@@ -260,7 +229,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const doc: CozyDoc = res.data;
       let dirPath: string | undefined;
       if (doc.attributes.type !== 'directory' && doc.attributes.dir_id) {
-        dirPath = (await stat(doc.attributes.dir_id, a.drive_id).catch(() => undefined))?.data.attributes.path;
+        dirPath = (await resolve({ id: doc.attributes.dir_id }, a.drive_id).catch(() => undefined))?.data.attributes.path;
       }
       const versions = ((res.included ?? []) as CozyDoc[])
         .filter((d) => d.type === 'io.cozy.files.versions')
@@ -295,7 +264,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: { query: string; type: 'file' | 'directory' | 'any'; class?: string; in_path?: string; limit: number }) => {
       await index.sync();
       const res = index.search(a.query, { type: a.type, class: a.class, inPath: a.in_path, limit: a.limit });
-      return { query: a.query, total: res.total, returned: res.hits.length, items: res.hits.map(hitSummary) };
+      return { query: a.query, total: res.total, returned: res.hits.length, items: res.hits.map((h: Hit) => sum({ id: h.id, attributes: h })) };
     })
   );
 
@@ -317,7 +286,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       const page = { limit: a.limit, bookmark: a.cursor };
       const query = dirId ? buildRecentFilesInFolderQuery(dirId, horizon, page) : buildRecentFilesQuery(horizon, page);
       const res = await client.query(query.definition, query.options);
-      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: nextBookmark(res, a.limit) };
+      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: res.next ? res.bookmark : undefined };
     })
   );
 
@@ -335,7 +304,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: { limit: number; cursor?: string }) => {
       const query = buildFavoritesQuery({ limit: a.limit, bookmark: a.cursor });
       const res = await client.query(query.definition, query.options);
-      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: nextBookmark(res, a.limit) };
+      return { count: res.data.length, items: res.data.map((d: CozyDoc) => sum(d)), next_cursor: res.next ? res.bookmark : undefined };
     })
   );
 
@@ -351,12 +320,12 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       annotations: READ,
     },
     wrap(async (a: { limit: number; cursor?: string }) => {
-      const res = await stat(TRASH_DIR_ID, undefined, { limit: a.limit, cursor: a.cursor });
+      const res = await resolve({ id: TRASH_DIR_ID }, undefined, { limit: a.limit, cursor: a.cursor });
       const items: CozyDoc[] = res.included ?? [];
       return {
         count: items.length,
         items: items.map((d) => ({ ...sum(d), restore_path: d.attributes.restore_path })),
-        next_cursor: nextCursor(res, config.baseUrl),
+        next_cursor: res.links?.next ? new URL(res.links.next, config.baseUrl).searchParams.get('page[cursor]') : undefined,
       };
     })
   );
@@ -377,14 +346,15 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { max_chars?: number }) => {
       requireRef(a, 'file');
       const meta = (await resolve(a, a.drive_id)).data;
-      if (meta.attributes.type === 'directory') throw new DriveError('This is a folder: use list_folder', 400);
+      if (meta.attributes.type === 'directory') throw new Error('This is a folder: use list_folder');
       const name: string = meta.attributes.name;
       if (!isTextLike(meta.attributes.mime, name)) {
-        throw new DriveError(`${name} (${meta.attributes.mime}) is not a text file: use download_file`, 415);
+        throw new Error(`${name} (${meta.attributes.mime}) is not a text file: use download_file`);
       }
-      const bytes = await download(meta.id, a.drive_id);
+      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id);
+      const bytes = new Uint8Array(await res.arrayBuffer());
       const markdown = isTar(bytes) ? markdownFromTar(bytes) : new TextDecoder().decode(bytes);
-      if (markdown === undefined) throw new DriveError(`${name} is a damaged note: its archive has no readable index.md`, 422);
+      if (markdown === undefined) throw new Error(`${name} is a damaged note: its archive has no readable index.md`);
       let content = markdown;
       const max = a.max_chars ?? config.maxTextChars;
       const truncated = content.length > max;
@@ -412,11 +382,11 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { save_to?: string }) => {
       requireRef(a, 'file');
       const meta = (await resolve(a, a.drive_id)).data;
-      if (meta.attributes.type === 'directory') throw new DriveError('Downloading a whole folder is not supported', 400);
+      if (meta.attributes.type === 'directory') throw new Error('Downloading a whole folder is not supported');
       const name: string = meta.attributes.name;
       let target: string;
       if (a.save_to) {
-        if (!isAbsolute(a.save_to)) throw new DriveError('save_to must be absolute', 400);
+        if (!isAbsolute(a.save_to)) throw new Error('save_to must be absolute');
         const isDir = existsSync(a.save_to) && (await fsStat(a.save_to)).isDirectory();
         target = isDir ? join(a.save_to, name) : a.save_to;
       } else {
@@ -425,9 +395,10 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       }
       await assertInside(config.downloadDir, target, 'TWAKE_DRIVE_DOWNLOAD_DIR');
       await mkdir(dirname(target), { recursive: true });
-      const bytes = await download(meta.id, a.drive_id);
+      const res = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).fetchFileContentById(meta.id);
+      const bytes = new Uint8Array(await res.arrayBuffer());
       await writeFile(target, bytes, { flag: 'wx' }).catch((e: NodeJS.ErrnoException) => {
-        throw e.code === 'EEXIST' ? new DriveError(`${target} already exists`, 409) : e;
+        throw e.code === 'EEXIST' ? new Error(`${target} already exists`) : e;
       });
       return { id: meta.id, name, local_path: resolvePath(target), size: humanSize(bytes.length), mime: meta.attributes.mime };
     })
@@ -506,8 +477,8 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: { name?: string; path?: string; parents: boolean; parent_id?: string; parent_path?: string; drive_id?: string }) => {
       if (a.path) {
-        const parts = normalizePath(a.path).split('/').filter(Boolean);
-        if (!parts.length) throw new DriveError('path must not be the root', 400);
+        const parts = posix.resolve('/', a.path.trim()).split('/').filter(Boolean);
+        if (!parts.length) throw new Error('path must not be the root');
         let parentId = ROOT_DIR_ID;
         let current = '';
         let last: CozyDoc | undefined;
@@ -517,17 +488,17 @@ export function registerTools(server: McpServer, client: any, config: Config, in
             last = (await statByPath(current, a.drive_id)).data as CozyDoc;
             if (i === parts.length - 1) return { already_existed: true, ...sum(last) };
           } catch (e) {
-            if ((e as { status?: number }).status !== 404 || e instanceof DriveError) throw e;
-            if (i < parts.length - 1 && !a.parents) throw new DriveError(`${current} does not exist (use parents=true)`, 404);
-            last = await createDir(parentId, part, a.drive_id);
+            if ((e as { status?: number }).status !== 404) throw e;
+            if (i < parts.length - 1 && !a.parents) throw new Error(`${current} does not exist (use parents=true)`);
+            last = (await client.save({ _type: FILES_DOCTYPE, type: 'directory', name: part, dirId: parentId }, { driveId: a.drive_id })).data as CozyDoc;
           }
           parentId = last.id;
         }
         return { created: true, ...sum(last!) };
       }
-      if (!a.name) throw new DriveError('Give either path, or name with parent_id/parent_path', 400);
+      if (!a.name) throw new Error('Give either path, or name with parent_id/parent_path');
       const parentId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
-      return { created: true, ...sum(await createDir(parentId, a.name, a.drive_id)) };
+      return { created: true, ...sum((await client.save({ _type: FILES_DOCTYPE, type: 'directory', name: a.name, dirId: parentId }, { driveId: a.drive_id })).data) };
     })
   );
 
@@ -555,7 +526,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: any) => {
       const name: string | undefined = a.name ?? (a.local_path ? basename(a.local_path) : undefined);
-      if (!name) throw new DriveError('name is required when uploading content', 400);
+      if (!name) throw new Error('name is required when uploading content');
       const bytes = await loadBytes(a, config.uploadDir);
       const dirId = await resolveDirId({ id: a.parent_id, path: a.parent_path }, a.drive_id);
       const { doc, action } = await uploadWithPolicy(dirId, name, bytes, a.mime ?? guessMime(name), a.on_conflict, a.drive_id);
@@ -579,11 +550,11 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: any) => {
       requireRef(a, 'file');
       const meta = (await resolve(a, a.drive_id)).data;
-      if (meta.attributes.type === 'directory') throw new DriveError('This is a folder', 400);
+      if (meta.attributes.type === 'directory') throw new Error('This is a folder');
       const bytes = await loadBytes(a, config.uploadDir);
       const contentType = meta.attributes.mime ?? guessMime(meta.attributes.name);
       const file = { fileId: meta.id, name: meta.attributes.name, options: { contentType } };
-      const { data: doc } = await files(a.drive_id).updateFile(bytes, file, { ifMatch: meta.meta?.rev, sanitizeName: false });
+      const { data: doc } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateFile(bytes, file, { ifMatch: meta.meta?.rev, sanitizeName: false });
       return { updated: true, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };
     })
   );
@@ -709,7 +680,9 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { new_name: string }) => {
       requireRef(a);
       const meta = (await resolve(a, a.drive_id)).data;
-      return { renamed_from: meta.attributes.name, ...sum(await patch(meta.id,{ name: a.new_name }, a.drive_id)) };
+      // client.save() always targets /files, never a shared drive, and it trims names: same for the three tools below.
+      const { data: doc } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateAttributes(meta.id, { name: a.new_name }, { sanitizeName: false });
+      return { renamed_from: meta.attributes.name, ...sum(doc) };
     })
   );
 
@@ -727,10 +700,11 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: Ref & { destination_id?: string; destination_path?: string }) => {
       requireRef(a);
-      if (!a.destination_id && !a.destination_path) throw new DriveError('Give destination_id or destination_path', 400);
+      if (!a.destination_id && !a.destination_path) throw new Error('Give destination_id or destination_path');
       const meta = (await resolve(a, a.drive_id)).data;
       const dirId = await resolveDirId({ id: a.destination_id, path: a.destination_path }, a.drive_id);
-      return { moved: true, ...sum(await patch(meta.id,{ dir_id: dirId }, a.drive_id)) };
+      const { data: doc } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateAttributes(meta.id, { dir_id: dirId });
+      return { moved: true, ...sum(doc) };
     })
   );
 
@@ -750,12 +724,12 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { destination_id?: string; destination_path?: string; new_name?: string }) => {
       requireRef(a, 'file');
       const meta = (await resolve(a, a.drive_id)).data;
-      if (meta.attributes.type === 'directory') throw new DriveError('Copying a folder is not supported by the API', 400);
+      if (meta.attributes.type === 'directory') throw new Error('Copying a folder is not supported by the API');
       const dirId =
         a.destination_id || a.destination_path
           ? await resolveDirId({ id: a.destination_id, path: a.destination_path }, a.drive_id)
           : undefined;
-      const { data: copy } = await files(a.drive_id).copy(meta.id, a.new_name, dirId, { sanitizeName: false });
+      const { data: copy } = await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).copy(meta.id, a.new_name, dirId, { sanitizeName: false });
       return { copied: true, ...sum(copy) };
     })
   );
@@ -772,7 +746,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       requireRef(a);
       const meta = (await resolve(a, a.drive_id)).data;
       const cozyMetadata = { ...(meta.attributes.cozyMetadata ?? {}), favorite: a.favorite };
-      return sum(await patch(meta.id,{ cozyMetadata }, a.drive_id));
+      return sum((await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateAttributes(meta.id, { cozyMetadata })).data);
     })
   );
 
@@ -787,7 +761,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref & { tags: string[] }) => {
       requireRef(a);
       const meta = (await resolve(a, a.drive_id)).data;
-      return sum(await patch(meta.id,{ tags: a.tags }, a.drive_id));
+      return sum((await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).updateAttributes(meta.id, { tags: a.tags })).data);
     })
   );
 
@@ -802,7 +776,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     wrap(async (a: Ref) => {
       requireRef(a);
       const meta = (await resolve(a, a.drive_id)).data;
-      await files(a.drive_id).destroy({ _id: meta.id });
+      await client.collection(FILES_DOCTYPE, { driveId: a.drive_id }).destroy({ _id: meta.id });
       return { trashed: true, id: meta.id, name: meta.attributes.name };
     })
   );
@@ -815,7 +789,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       inputSchema: { id: z.string() },
       annotations: MODIFY,
     },
-    wrap(async (a: { id: string }) => ({ restored: true, ...sum((await files().restore(a.id)).data) }))
+    wrap(async (a: { id: string }) => ({ restored: true, ...sum((await client.collection(FILES_DOCTYPE).restore(a.id)).data) }))
   );
 
   server.registerTool(
@@ -828,7 +802,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: { id: string; version_id: string }) => {
       // cozy-client has no call for this route.
-      const path = `${files().prefix}/revert/${encodeURIComponent(a.id)}/${encodeURIComponent(a.version_id)}`;
+      const path = `${client.collection(FILES_DOCTYPE).prefix}/revert/${encodeURIComponent(a.id)}/${encodeURIComponent(a.version_id)}`;
       return { reverted: true, ...sum((await stack.fetchJSON('POST', path)).data) };
     })
   );
@@ -852,7 +826,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
     },
     wrap(async (a: Ref & { write: boolean; password?: string; expires_at?: string }) => {
       requireRef(a);
-      if (a.drive_id) throw new DriveError('Public links on shared-drive items are not supported by this tool', 400);
+      if (a.drive_id) throw new Error('Public links on shared-drive items are not supported by this tool');
       const meta = (await resolve(a, undefined)).data;
       const expiresAt = a.expires_at ? new Date(a.expires_at).toISOString() : undefined;
       const { data: perm } = await client.save({
@@ -898,13 +872,13 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       annotations: DESTRUCTIVE,
     },
     wrap(async (a: { id: string }) => {
-      const meta: CozyDoc = (await stat(a.id)).data;
+      const meta: CozyDoc = (await resolve({ id: a.id })).data;
       const inTrash =
         meta.attributes.trashed === true ||
         meta.attributes.dir_id === TRASH_DIR_ID ||
         String(meta.attributes.path ?? '').startsWith('/.cozy_trash/');
-      if (!inTrash) throw new DriveError('Only trashed items can be destroyed: use trash_item first', 400);
-      await files().deleteFilePermanently(a.id);
+      if (!inTrash) throw new Error('Only trashed items can be destroyed: use trash_item first');
+      await client.collection(FILES_DOCTYPE).deleteFilePermanently(a.id);
       return { destroyed: true, id: a.id, name: meta.attributes.name };
     })
   );
@@ -918,7 +892,7 @@ export function registerTools(server: McpServer, client: any, config: Config, in
       annotations: DESTRUCTIVE,
     },
     wrap(async () => {
-      await files().emptyTrash();
+      await client.collection(FILES_DOCTYPE).emptyTrash();
       return { emptied: true };
     })
   );
