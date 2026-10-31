@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile, stat as fsStat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile, stat as fsStat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -71,6 +71,17 @@ async function loadBytes(args: { local_path?: string; content?: string; content_
   }
   if (args.content !== undefined) return new TextEncoder().encode(args.content);
   return new Uint8Array(Buffer.from(args.content_base64!, 'base64'));
+}
+
+/** Follows symlinks through the deepest existing ancestor, since the target itself may not exist yet. */
+async function assertInside(root: string, target: string): Promise<void> {
+  await mkdir(root, { recursive: true });
+  let existing = resolvePath(target);
+  while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+  const rel = relative(await realpath(root), await realpath(existing));
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new DriveError(`Local path must stay inside ${root} (TWAKE_DRIVE_DOWNLOAD_DIR)`, 400);
+  }
 }
 
 export function registerTools(server: McpServer, drive: DriveClient, index: FileIndex): void {
@@ -351,9 +362,12 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
         'e.g. to read a PDF or an Office document with local tools.',
       inputSchema: {
         ...itemRef,
-        save_to: z.string().optional().describe('Absolute local path (file or existing folder). Default: download folder.'),
+        save_to: z
+          .string()
+          .optional()
+          .describe('Absolute local path (new file or existing folder) inside the download folder. Default: download folder.'),
       },
-      annotations: { ...READ, idempotentHint: false },
+      annotations: CREATE,
     },
     wrap(async (a: Ref & { save_to?: string }) => {
       requireRef(a, 'file');
@@ -369,9 +383,12 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
         target = join(drive.config.downloadDir, name);
         for (let n = 2; existsSync(target); n++) target = join(drive.config.downloadDir, variantName(name, n));
       }
+      await assertInside(drive.config.downloadDir, target);
       await mkdir(dirname(target), { recursive: true });
       const { bytes } = await drive.download(meta.id, a.drive_id);
-      await writeFile(target, bytes);
+      await writeFile(target, bytes, { flag: 'wx' }).catch((e: NodeJS.ErrnoException) => {
+        throw e.code === 'EEXIST' ? new DriveError(`${target} already exists`, 409) : e;
+      });
       return { id: meta.id, name, local_path: resolvePath(target), size: humanSize(bytes.length), mime: meta.attributes.mime };
     })
   );
@@ -513,7 +530,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
       description: 'Replace the content of an existing file (the previous content is kept as an old version).',
       inputSchema: {
         ...itemRef,
-        local_path: z.string().optional(),
+        local_path: z.string().optional().describe('Absolute path of a local file inside the download folder'),
         content: z.string().optional(),
         content_base64: z.string().optional(),
       },
@@ -523,6 +540,7 @@ export function registerTools(server: McpServer, drive: DriveClient, index: File
       requireRef(a, 'file');
       const meta = (await drive.resolve(a, a.drive_id, { limit: 1 })).data;
       if (meta.attributes.type === 'directory') throw new DriveError('This is a folder', 400);
+      if (a.local_path !== undefined && isAbsolute(a.local_path)) await assertInside(drive.config.downloadDir, a.local_path);
       const bytes = await loadBytes(a);
       const doc = await drive.overwrite(meta.id, bytes, meta.attributes.mime ?? guessMime(meta.attributes.name), a.drive_id, meta.meta?.rev);
       return { updated: true, ...sum(doc, { driveId: a.drive_id }), size_human: humanSize(bytes.length) };

@@ -43,8 +43,8 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 
 | Category | Tools |
 |---|---|
-| Read | `get_drive_info`, `list_folder`, `get_item`, `search_files`, `list_recent_files`, `list_favorites`, `list_trash`, `read_file`, `download_file`, `list_shared_drives`, `list_sharings`, `list_share_links` |
-| Create | `create_folder` (with `parents`, like `mkdir -p`), `upload_file` (local file, text or base64; `on_conflict`: error / rename / overwrite), `update_file_content`, `create_document` (empty .docx / .xlsx / .pptx), `create_note` (collaborative note, optional Markdown content), `create_shortcut`, `create_drawing` (Excalidraw) |
+| Read | `get_drive_info`, `list_folder`, `get_item`, `search_files`, `list_recent_files`, `list_favorites`, `list_trash`, `read_file`, `list_shared_drives`, `list_sharings`, `list_share_links` |
+| Create | `download_file` (local copy, inside the download folder), `create_folder` (with `parents`, like `mkdir -p`), `upload_file` (local file, text or base64; `on_conflict`: error / rename / overwrite), `update_file_content`, `create_document` (empty .docx / .xlsx / .pptx), `create_note` (collaborative note, optional Markdown content), `create_shortcut`, `create_drawing` (Excalidraw) |
 | Organise | `rename_item`, `move_item`, `copy_file`, `set_favorite`, `set_tags`, `trash_item`, `restore_from_trash`, `revert_version` |
 | Share ⚠️ | `create_share_link` (read-only or edit, optional password and expiry), `revoke_share_link` |
 | Irreversible ⚠️ | `delete_permanently` (only items already in the trash), `empty_trash` |
@@ -92,7 +92,7 @@ npm run build          # then run: node build/index.js
 | `TWAKE_DRIVE_TOKEN_COMMAND` | yes\* | Command printing an OAuth access token, raw or as JSON `{"access_token": "...", "expires_at": <epoch s>}`. Called again shortly before expiry. |
 | `TWAKE_DRIVE_TOKEN` | yes\* | Static token (development only) |
 | `TWAKE_DRIVE_APP_URL` | no | Drive web app used for the `url` links, default `<instance>-drive.<domain>` |
-| `TWAKE_DRIVE_DOWNLOAD_DIR` | no | Where `download_file` writes, default `~/Downloads/twake-drive` |
+| `TWAKE_DRIVE_DOWNLOAD_DIR` | no | Where `download_file` writes and `update_file_content` reads `local_path`, default `~/Downloads/twake-drive` |
 | `TWAKE_DRIVE_CACHE_DIR` | no | Search index location, default `~/.cache/mcp-twake-drive` |
 | `TWAKE_DRIVE_MAX_TEXT_CHARS` | no | `read_file` truncation, default `60000` |
 | `TWAKE_DRIVE_TIMEOUT_MS` | no | HTTP request timeout |
