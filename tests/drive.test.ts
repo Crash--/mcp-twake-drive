@@ -37,7 +37,7 @@ const tokens = () => {
 
 describe('config', () => {
   it('derives the drive app URL from the instance', () => {
-    expect(deriveAppUrl('https://mmaudet.twake.linagora.com')).toBe('https://mmaudet-drive.twake.linagora.com');
+    expect(deriveAppUrl('https://alice.twake.example.com')).toBe('https://alice-drive.twake.example.com');
     expect(deriveAppUrl('https://a.b.c', 'notes')).toBe('https://a-notes.b.c');
   });
   it('refuses plain HTTP and missing credentials', () => {

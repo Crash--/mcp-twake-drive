@@ -1,7 +1,7 @@
 {
   "name": "mcp-twake-drive",
   "version": "0.1.0",
-  "description": "MCP server for Twake Drive (Cozy stack): browse, search, read, create, organise and share files from any MCP-compatible AI assistant",
+  "description": "MCP server for Twake.ai Drive: give any MCP-compatible AI assistant secure access to your sovereign Twake Drive (cozy-stack) to browse, search, read, create, organise and share files",
   "type": "module",
   "main": "build/index.js",
   "bin": {
@@ -11,7 +11,9 @@
     "build",
     "templates",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -21,9 +23,23 @@
   "engines": {
     "node": ">=20"
   },
-  "keywords": ["mcp", "twake", "cozy", "drive", "linagora"],
-  "license": "AGPL-3.0",
-  "author": "LINAGORA",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "twake",
+    "twake.ai",
+    "twake-drive",
+    "cozy",
+    "drive",
+    "files",
+    "linagora",
+    "ai",
+    "sovereign",
+    "open-source"
+  ],
+  "license": "AGPL-3.0-only",
+  "author": "LINAGORA <https://linagora.com>",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.3",
     "zod": "^4.3.6"
@@ -32,5 +48,13 @@
     "@types/node": "^25.0.10",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linagora/mcp-twake-drive.git"
+  },
+  "homepage": "https://github.com/linagora/mcp-twake-drive#readme",
+  "bugs": {
+    "url": "https://github.com/linagora/mcp-twake-drive/issues"
   }
 }
