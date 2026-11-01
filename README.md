@@ -15,9 +15,9 @@ It talks directly to the HTTP API of the **cozy-stack**, the open source server 
 
 ## Part of Twake.ai
 
-[Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat and Twake Visio with a single account, hosted in France or on your own infrastructure.
+[Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat, Twake Space and Twake Visio with a single account, hosted in France or on your own infrastructure.
 
-Four open source MCP servers connect AI assistants to the whole workplace:
+Five open source MCP servers connect AI assistants to the whole workplace:
 
 | MCP server | Twake.ai service | Protocol |
 |---|---|---|
@@ -25,6 +25,7 @@ Four open source MCP servers connect AI assistants to the whole workplace:
 | [mcp-twake-dav](https://github.com/linagora/mcp-twake-dav) | Twake Calendar and contacts | CalDAV / CardDAV |
 | **mcp-twake-drive** (this project) | Twake Drive | cozy-stack API |
 | [mcp-twake-chat](https://github.com/linagora/mcp-twake-chat) | Twake Chat | Matrix |
+| [mcp-twake-space](https://github.com/linagora/mcp-twake-space) | Twake Space (team spaces) | Twake Space API |
 
 Used together, they let one assistant prepare a meeting from the invitation, the related email thread, the chat discussion and the documents in the drive, without your data leaving your servers.
 
