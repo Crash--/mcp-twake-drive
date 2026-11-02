@@ -59,7 +59,7 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 
 - **Paths or ids**: items are addressed by `id` or by absolute `path` (`/Documents/report.pdf`); items in a **shared drive** take an extra `drive_id` (from `list_shared_drives`).
 - **Links back to the app**: every result carries a `url` that opens the item in the Twake Drive web app.
-- **Fast search**: the cozy-stack has no server-side search (a Mango `$regex` on names scans every document and times out on large drives). Like the Twake Drive apps, the server keeps a **local metadata index** (names, folders, types, sizes, dates; no content) built from `/files/_changes`, stored with `0600` permissions and refreshed incrementally before each search. The first sync of a 50 000-item drive takes about 15 s and starts in the background at launch. Search is case- and accent-insensitive, every word must appear in the name, with optional `type`, `class` and `in_path` filters.
+- **Fast search**: the cozy-stack has no server-side search (a Mango `$regex` on names scans every document and times out on large drives). Like the Twake Drive apps, the server keeps a **local metadata index** (names, folders, types, sizes, dates; no content) built from `/files/_changes`, stored with `0600` permissions and refreshed incrementally before each search. The index is only built by the first search, which takes about 15 s on a 50 000-item drive; every other tool reads the server directly. Search is case- and accent-insensitive, every word must appear in the name, with optional `type`, `class` and `in_path` filters.
 - **Collaborative notes as Markdown**: `.cozy-note` files are returned as Markdown by `read_file`, and `create_note` turns Markdown into a real collaborative note.
 - **No password, no OAuth flow inside**: short-lived access tokens come from an external broker you control.
 
@@ -95,12 +95,10 @@ npm run build          # then run: node build/index.js
 | `TWAKE_DRIVE_URL` | yes | Your Twake Drive (cozy-stack) instance, e.g. `https://alice.twake.example.com` |
 | `TWAKE_DRIVE_TOKEN_COMMAND` | yes\* | Command printing an OAuth access token, raw or as JSON `{"access_token": "...", "expires_at": <epoch s>}`. Called again shortly before expiry. |
 | `TWAKE_DRIVE_TOKEN` | yes\* | Static token (development only) |
-| `TWAKE_DRIVE_APP_URL` | no | Drive web app used for the `url` links, default `<instance>-drive.<domain>` |
 | `TWAKE_DRIVE_DOWNLOAD_DIR` | no | Where `download_file` writes, default `~/Downloads/twake-drive` |
 | `TWAKE_DRIVE_UPLOAD_DIR` | no | Where `upload_file` and `update_file_content` read `local_path`, default `TWAKE_DRIVE_DOWNLOAD_DIR` |
 | `TWAKE_DRIVE_CACHE_DIR` | no | Search index location, default `~/.cache/mcp-twake-drive` |
 | `TWAKE_DRIVE_MAX_TEXT_CHARS` | no | `read_file` truncation, default `60000` |
-| `TWAKE_DRIVE_TIMEOUT_MS` | no | HTTP request timeout |
 | `TWAKE_DRIVE_APPROVAL` | no | `elicit` (default): the server asks you before every write to the drive; `client`: your MCP client confirms |
 | `TWAKE_DRIVE_APPROVAL_TIMEOUT_MS` | no | How long an approval prompt waits for your answer, default `600000` |
 | `USER_LANGUAGE` | no | Language of the approval prompts, `en` (default) or `fr` |
@@ -216,6 +214,7 @@ Documents may be written by third parties (prompt injection). See [SECURITY.md](
 npm install
 npm run build
 npm test         # fake fetch and in-memory MCP client: never touches a real drive
+npm run test:start   # runs the built server as a process, against a local fake server
 npm run typecheck
 ```
 
