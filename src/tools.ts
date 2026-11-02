@@ -62,6 +62,7 @@ function stackDetail(reason: any): string {
 }
 
 function errorLines(e: any): string[] {
+  if (e.name === 'TimeoutError') return ['Error: Twake Drive did not answer in time (TWAKE_DRIVE_TIMEOUT_MS)'];
   if (e.status === undefined) return [e instanceof TypeError ? `Error: Twake Drive did not answer: ${e.message}` : `Error: ${e.message}`];
   const detail = stackDetail(e.reason);
   // The stack refuses a token with a 400.

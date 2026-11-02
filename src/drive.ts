@@ -33,7 +33,7 @@ class TokenStackClient extends CozyStackClient {
   refreshFailure?: Error;
 
   constructor(
-    options: { uri: string },
+    options: { uri: string; timeout?: number },
     private readonly tokens: TokenSource
   ) {
     super(options);
@@ -55,7 +55,7 @@ class TokenStackClient extends CozyStackClient {
   }
 }
 
-export function createCozyClient(baseUrl: string, tokens: TokenSource) {
+export function createCozyClient(baseUrl: string, tokens: TokenSource, timeout?: number) {
   // A long-lived process never reads the store, and it would keep every document ever listed. Writes still land in it.
-  return new CozyClient({ stackClient: new TokenStackClient({ uri: baseUrl }, tokens), disableStoreForQueries: true });
+  return new CozyClient({ stackClient: new TokenStackClient({ uri: baseUrl, timeout }, tokens), disableStoreForQueries: true });
 }

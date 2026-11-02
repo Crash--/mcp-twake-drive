@@ -16,6 +16,7 @@ export interface Config {
   maxTextChars: number;
   /** Prior approval of every write: elicit = the server asks the user (MCP elicitation); client = the MCP client confirms. */
   approval?: { mode: 'elicit' | 'client'; language: 'en' | 'fr'; timeoutMs: number };
+  timeoutMs: number;
 }
 
 function expandHome(p: string): string {
@@ -33,6 +34,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!env.TWAKE_DRIVE_TOKEN_COMMAND && !env.TWAKE_DRIVE_TOKEN) {
     throw new Error('Set TWAKE_DRIVE_TOKEN_COMMAND (recommended) or TWAKE_DRIVE_TOKEN');
   }
+  const timeoutMs = Number(env.TWAKE_DRIVE_TIMEOUT_MS ?? 50000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('TWAKE_DRIVE_TIMEOUT_MS must be a positive number of milliseconds');
+  }
   const downloadDir = expandHome(env.TWAKE_DRIVE_DOWNLOAD_DIR ?? '~/Downloads/twake-drive');
   return {
     baseUrl,
@@ -43,6 +48,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cacheDir: expandHome(env.TWAKE_DRIVE_CACHE_DIR ?? join(env.XDG_CACHE_HOME ?? '~/.cache', 'mcp-twake-drive')),
     maxTextChars: Number(env.TWAKE_DRIVE_MAX_TEXT_CHARS ?? 60000),
     approval: approvalOf(env),
+    timeoutMs,
   };
 }
 
